@@ -16,7 +16,8 @@ enum class ColorPins : uint8_t {                               // пины, со
 enum class BlinkModes : uint8_t {
   TOTAL_ERROR,
   SCALE,
-  INFO
+  INFO,
+  NONE
 };
 
 #endif

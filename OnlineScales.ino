@@ -39,7 +39,7 @@ class BlinkLed {
           digitalWrite(static_cast<byte>(pin), HIGH);
           delay(BLINK_PERIOD);
           digitalWrite(static_cast<byte>(pin), LOW);
-          if (i != 1) delay(BLINK_DELAY); 
+          delay(BLINK_DELAY); 
         }
       }
 
@@ -48,6 +48,12 @@ class BlinkLed {
         digitalWrite(static_cast<byte>(pin), HIGH);
         delay(BLINK_PERIOD);
         digitalWrite(static_cast<byte>(pin), LOW);
+      }
+
+      else if (mode == BlinkModes::NONE) {
+        digitalWrite(static_cast<byte>(ColorPins::RED), LOW);
+        digitalWrite(static_cast<byte>(ColorPins::GREEN), LOW);
+        digitalWrite(static_cast<byte>(ColorPins::BLUE), LOW);
       }
     }
 
@@ -85,11 +91,10 @@ void setup() {
   Serial.begin(9600);      // USB COM
   Serial1.begin(9600);     // Аппаратный UART (TX1=1, RX1=0 на Pro Micro)
 
-  byte attemps = 0;
-  while (scale.begin() == ScaleErrors::NEED_RECALL && attemps < ATTEMPS_NUM) {attemps++;}
-  if (attemps == ATTEMPS_NUM) while (true) led.showLed(ColorPins::RED, BlinkModes::TOTAL_ERROR);
-
-  led.showLed(ColorPins::GREEN, BlinkModes::SCALE);
+  byte attempts = 0;
+  while (scale.begin() == ScaleErrors::NEED_RECALL && attempts < ATTEMPS_NUM) {attempts++;}
+  if (attempts == ATTEMPS_NUM) led.showLed(ColorPins::RED, BlinkModes::TOTAL_ERROR);
+  else led.showLed(ColorPins::GREEN, BlinkModes::SCALE);
 }
 
 void loop() {
