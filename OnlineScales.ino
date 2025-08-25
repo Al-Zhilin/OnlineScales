@@ -16,6 +16,7 @@
 #define SLEEP_OUT 1 * 60 * 1000                 // за сколько времени до отправки разбудить модули, проверить соединение и подготовить данные к отправке
 #define SCALE_WAIT_PERIOD 10 * 1000             // период ожидания готовности датчика веса для получения новых значения
 #define ATTEMPS_NUM 3                           // количество попыток получить успешный результат от того или иного действия
+#define SCALE_READ_PERIOD 200                   // период чтения значений веса
 
 
 // -------------------------------------- Периоды моргания светодиода --------------------------------------
@@ -62,9 +63,9 @@ class BlinkLed {
 class Scales {
   public:
     ScaleErrors begin() {
-      if (this->checkAvailable() == ScaleErrors::TIMEOUT_ERROR) {         // модуль не готов и вышел таймаут ожидания
+      if (this->checkAvailable() == ScaleErrors::NOT_AVAILABLE) {         // модуль не готов и вышел таймаут ожидания
         led.showLed(ColorPins::RED, BlinkModes::SCALE);
-        return ScaleErrors::NEED_RECALL;
+        return ScaleErrors::NOT_AVAILABLE;
       }
 
       sensor.tare();                                // обнуляем вес, считаем текущие показания весов нулем 
@@ -72,10 +73,18 @@ class Scales {
     }
 
     ScaleErrors checkAvailable() {                  // функция проверяет доступность данных для чтения и/или ждет, пока это не произойдет
-      uint32_t wait_period = millis();
-      while (!sensor.available() && millis() - wait_period <= SCALE_WAIT_PERIOD)  led.showLed(ColorPins::BLUE, BlinkModes::INFO);                 // ждем пока измерения станут доступными или не выйдет таймаут 
-      if (millis() - wait_period > SCALE_WAIT_PERIOD) return ScaleErrors::TIMEOUT_ERROR;                       // вышли из ожидания из-за истекшего таймаута
-      return ScaleErrors::SUCCESS;
+      byte attempts = 0;
+      while (attempts < ATTEMPS_NUM) {
+        uint32_t wait_period = millis();
+        while (!sensor.available() && millis() - wait_period <= SCALE_WAIT_PERIOD)  led.showLed(ColorPins::BLUE, BlinkModes::INFO);                 // ждем пока измерения станут доступными или не выйдет таймаут 
+        if (millis() - wait_period < SCALE_WAIT_PERIOD)   return ScaleErrors::SUCCESS;                                                              // вышли из ожидания из-за истекшего таймаута
+        attempts++;
+      }
+      return ScaleErrors::NOT_AVAILABLE;
+    }
+
+    ScaleErrors readRaw() {
+      
     }    
 
 } scale;
@@ -85,19 +94,22 @@ void setup() {
   pinMode(static_cast<byte>(ColorPins::RED), OUTPUT);
   pinMode(static_cast<byte>(ColorPins::GREEN), OUTPUT);
   pinMode(static_cast<byte>(ColorPins::BLUE), OUTPUT);
-  pinMode(RST_PIN, HIGH);
+  pinMode(RST_PIN, OUTPUT);
   pinMode(BUTT_PIN, INPUT_PULLUP);
 
   Serial.begin(9600);      // USB COM
   Serial1.begin(9600);     // Аппаратный UART (TX1=1, RX1=0 на Pro Micro)
 
-  byte attempts = 0;
-  while (scale.begin() == ScaleErrors::NEED_RECALL && attempts < ATTEMPS_NUM) {attempts++;}
-  if (attempts == ATTEMPS_NUM) led.showLed(ColorPins::RED, BlinkModes::TOTAL_ERROR);
+  if (scale.begin() == ScaleErrors::NOT_AVAILABLE)  led.showLed(ColorPins::RED, BlinkModes::TOTAL_ERROR);
   else led.showLed(ColorPins::GREEN, BlinkModes::SCALE);
 }
 
 void loop() {
+  static uint32_t scale_read = millis();
+  if (millis() - scale_read >= SCALE_READ_PERIOD) {
+    scale_read = millis();
+    scale.readRaw();                                      // нужно для поддержания корретного значения в фильтре
+  }
   
 }
 

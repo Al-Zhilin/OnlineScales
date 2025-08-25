@@ -3,8 +3,7 @@
 
 enum class ScaleErrors : uint8_t {
   SUCCESS,
-  TIMEOUT_ERROR,
-  NEED_RECALL
+  NOT_AVAILABLE
 };
 
 enum class ColorPins : uint8_t {                               // пины, соответствующие каждому цвету (выводу) RGB светодиода
