@@ -61,6 +61,9 @@ class BlinkLed {
 } led;
 
 class Scales {
+  private:
+    int32_t filted = 0;
+
   public:
     ScaleErrors begin() {
       if (this->checkAvailable() == ScaleErrors::NOT_AVAILABLE) {         // модуль не готов и вышел таймаут ожидания
@@ -84,7 +87,14 @@ class Scales {
     }
 
     ScaleErrors readRaw() {
-      
+      int32_t newVal = 0;
+      if (this->checkAvailable() == ScaleErrors::SUCCESS) newVal = sensor.read();
+      else return ScaleErrors::NOT_AVAILABLE;
+
+      if (!fitled)  filted = newVal;
+      else {
+        filted += (newVal - filted) * 
+      }
     }    
 
 } scale;
