@@ -1,0 +1,1 @@
+#define MONITORING_LINK "http://open-monitoring.online/get?cid=4464&key=qitHUa&p1="                                                   //ссылка для HTTP запроса на OpenMonitoring, вплоть до "&p1="
