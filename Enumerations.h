@@ -15,7 +15,6 @@ enum class LedModes {                       // режимы световод и�
     OK,
     ERROR,
     WAIT,
-    TARE,
     NONE
 };
 

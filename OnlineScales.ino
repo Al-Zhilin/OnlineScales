@@ -72,34 +72,60 @@ void loop() {
         pendingTare = true;                         // подняли флаг. После WAKEUP обработаем его
         LOG("Tare request captured");
     }
+
+    if (currentState != SystemState::MEASURE && currentState != SystemState::TARE_PROCESS) {         // если пока нет возможности выполнить запрос на тарирование
+        led.setMode(LedModes::WAIT);
+    }
     
     switch (currentState) {
+
+        case SystemState::WAKEUP:
+            // пробудили весы
+            // пробудили ds18
+            break;
+
+        case SystemState::MEASURE:
+            // измеряем вес, температуру
+            // прогоняем через фильтры, обновляем тем самым фильтрованные значения
+            break;
+
+        // ------------------- Эта часть вызывается по таймеру, а не в каждом цикле -------------------
+        case SystemState::CONNECT_GSM:
+            // включаем модем
+            // подключаем к сети
+            // проверяем готовность к передаче даннх
+            break;
+
+        case SystemState::DATA_SEND:
+            // читаем входящие данные/отправляем на сервер новые
+            // проверяем наличие ошибок
+            break;
+        // ------------------- Эта часть вызывается по таймеру, а не в каждом цикле -------------------
+
+
+        case SystemState::ERROR_HANDLING:
+            // сюда будем попадать после возникновения ошибок
+            // пытаемся их починить, откорректировать работу
+            // готовим данные о возникших неполадках/трудностях работы к отправке на сервер
+            break;
+
+        case SystemState::SLEEP:
+            // усыпляем модем, если он был включен в этом цикле
+            // усыпляем весы и остальную периферию
+            break;
+
+
+        // ------------------------------------- Особые состояния -------------------------------------
         case SystemState::CALIBRATION:
-            // здесь только калибровка весов и логирование данных, никакого переключения состояния
+            // особое состояние, для калибровки поправочно-временного коэффициента. Без выходов и с входом сразу при запуске
             break;
 
         case SystemState::TARE_PROCESS:
             int8_t tare_state = scales.sensorTare();
             if (tare_state == 1)    led.setMode(LedModes::OK);
             else if (!tare_state)   led.setMode(LedModes::ERROR);
+            changeState(SystemState::MEASURE);
             break;
-
-        case SystemState::WAKEUP:
-            break;
-
-        case SystemState::MEASURE:
-            break;
-
-        case SystemState::CONNECT_GSM:
-            break;
-
-        case SystemState::DATA_SEND:
-            break;
-
-        case SystemState::ERROR_HANDLING:
-            break;
-
-        case SystemState::SLEEP:
-            break;
+        // ------------------------------------- Особые состояния -------------------------------------
     }
 }
