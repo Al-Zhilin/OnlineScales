@@ -1,6 +1,6 @@
 #include "Enumerations.h"
 
-#define USE_LOG Serial                            // удобный отладчик (закомментируй эту строку чтобы отключить)
+#define USE_LOG Serial                            // удобный отладчик через Serial (закомментируй эту строку чтобы отключить)
 void logHelper(const __FlashStringHelper* msg, const char* func, const char* file, int line) {          // функция удобного логирования
     #ifdef USE_LOG
         USE_LOG.print(F("> "));
@@ -29,7 +29,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #include "PowerManager.h"
 #include "GSM_Handler.h"
 
-#define WORK_MODE 1                               // режим работы: обычная работа (1) / калибровка (0)
+#define WORK_MODE 0                               // режим работы: обычная работа (1) / калибровка (0)
 
 #define RST_PIN 9                                 // пин RST на SIM800L
 #define SCL_PIN 8                                 // SCL пин HX711
@@ -39,6 +39,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #define RED_PIN 5                                 // красный цвет RGB светодиода
 #define GREEN_PIN 4                               // зеленый цвет
 #define BLUE_PIN 3                                // пин кнопки
+#define STANDART_NOISE 50                         // амплитуда стандартного шума весовых датчиков
 
 
 SystemState currentState = (WORK_MODE) ? SystemState::WAKEUP : SystemState::CALIBRATION;
@@ -78,14 +79,13 @@ void loop() {
     }
     
     switch (currentState) {
-
         case SystemState::WAKEUP:
             // пробудили весы
             // пробудили ds18
             break;
 
         case SystemState::MEASURE:
-            // измеряем вес, температуру
+            scales.tick();
             // прогоняем через фильтры, обновляем тем самым фильтрованные значения
             break;
 
@@ -117,7 +117,18 @@ void loop() {
 
         // ------------------------------------- Особые состояния -------------------------------------
         case SystemState::CALIBRATION:
-            // особое состояние, для калибровки поправочно-временного коэффициента. Без выходов и с входом сразу при запуске
+            static uint32_t calibration_timer = millis(), reading_timer = millis();
+            if (millis() - reading_timer >= 2000) {
+                scales.tick();
+                reading_timer = millis();
+            }
+
+            if (millis() - calibration_timer >= 1.6 * 60 * 1000) {
+                Serial1.print(sensorData.weightKg);
+                Serial1.print("/");
+                Serial1.println(sensorData.tempC);
+                calibration_timer = millis();
+            }
             break;
 
         case SystemState::TARE_PROCESS:
