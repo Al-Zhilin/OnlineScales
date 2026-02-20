@@ -1,13 +1,5 @@
 #pragma once
 
-// Вынесем enum, чтобы он был доступен везде
-enum class LedModes {
-    NONE,
-    OK,
-    ERROR,
-    WAIT
-};
-
 class AsyncLed {
 private:
     struct Pins {
@@ -55,6 +47,7 @@ public:
                 case LedModes::OK:    digitalWrite(_pins.green, HIGH); break;
                 case LedModes::ERROR: digitalWrite(_pins.red, HIGH);   break;
                 case LedModes::WAIT:  digitalWrite(_pins.blue, HIGH);  break;
+                default: break;
             }
         }
     }
@@ -69,6 +62,7 @@ public:
             case LedModes::OK:    interval = 350; targetBlinks = 2; break;
             case LedModes::ERROR: interval = 200; targetBlinks = 3; break;
             case LedModes::WAIT:  interval = 800; targetBlinks = 0; break;
+            default: break;
         }
 
         if (millis() - _timer >= interval) {
@@ -79,6 +73,7 @@ public:
                 case LedModes::OK:    digitalWrite(_pins.green, _state); break;
                 case LedModes::ERROR: digitalWrite(_pins.red, _state);   break;
                 case LedModes::WAIT:  digitalWrite(_pins.blue, _state);  break;
+                default: break;
             }
 
             if (!_state && targetBlinks > 0) {

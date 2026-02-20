@@ -1,6 +1,6 @@
 #pragma once
 
-enum class SystemState {                    // состояния конечного автомата
+enum class SystemState : uint8_t {                    // состояния конечного автомата
     CALIBRATION,
     SLEEP,
     WAKEUP,
@@ -11,14 +11,14 @@ enum class SystemState {                    // состояния конечно
     TARE_PROCESS
 };
 
-enum class LedModes {                       // режимы световод индикации
+enum class LedModes : uint8_t {                       // режимы световод индикации
     OK,
     ERROR,
     WAIT,
     NONE
 };
 
-enum class ScalesState {                    // состояния весовой схемы (тензодатчики + HX711)
+enum class ScalesState : uint8_t {                    // состояния весовой схемы (тензодатчики + HX711)
     SUCCESS,
     ERROR
 };

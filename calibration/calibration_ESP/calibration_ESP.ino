@@ -1,76 +1,95 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <Preferences.h>
 
-float scale, temp;
-String inputString = "";
+// --- Настройки ---
+const char* ssid = "YOUR_WIFI";
+const char* password = "YOUR_PASS";
+const char* functionUrl = "https://functions.yandexcloud.net/id_вашей_функции";
 
-bool newData = false;
+Preferences prefs;
+double sumT = 0, sumW = 0, sumT2 = 0, sumTW = 0;
+uint32_t count = 0;
 
 void setup() {
-  Serial.begin(9600);        // Для вывода в монитор
-  Serial2.begin(9600, SERIAL_8N1, 16, 17); // адаптируй пины
-  ConnectWiFi();
+    Serial.begin(115200);
+    WiFi.begin(ssid, password);
+    
+    prefs.begin("calib_data", false);
+    sumT = prefs.getDouble("sumT", 0);
+    sumW = prefs.getDouble("sumW", 0);
+    sumT2 = prefs.getDouble("sumT2", 0);
+    sumTW = prefs.getDouble("sumTW", 0);
+    count = prefs.getUInt("count", 0);
+}
+
+// Функция расчета коэффициента k (наклон линии)
+double calculateCurrentK() {
+    if (count < 2) return 0;
+    double denominator = (count * sumT2 - sumT * sumT);
+    if (abs(denominator) < 0.000001) return 0; 
+    return (count * sumTW - sumT * sumW) / denominator;
+}
+
+void sendDataToCloud(float t, float w, double k) {
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin(functionUrl);
+        http.addHeader("Content-Type", "application/json");
+
+        StaticJsonDocument<200> doc;
+        doc["temp"] = t;
+        doc["raw_w"] = w;
+        doc["k"] = k;
+        doc["cnt"] = count;
+
+        String jsonPayload;
+        serializeJson(doc, jsonPayload);
+
+        int httpResponseCode = http.POST(jsonPayload);
+        
+        if (httpResponseCode > 0) {
+            Serial.print("Cloud Response: ");
+            Serial.println(httpResponseCode);
+        } else {
+            Serial.print("Error on sending POST: ");
+            Serial.println(httpResponseCode);
+        }
+        http.end();
+    }
 }
 
 void loop() {
-  if (Serial2.available()) {  // читаем теперь из Serial2
-      inputString = Serial2.readStringUntil('\n'); // до Enter или \n
-      inputString.trim(); // убираем пробелы и \r
+    // 1. Читаем датчики (эмуляция или реальные вызовы)
+    float currentT = readTemp(); 
+    float currentW = readWeight();
 
-      int sepIndex = inputString.indexOf('/'); // ищем
+    // 2. Накапливаем статистику для регрессии
+    sumT += currentT;
+    sumW += currentW;
+    sumT2 += (double)currentT * currentT;
+    sumTW += (double)currentT * currentW;
+    count++;
 
-      if (sepIndex != -1) {
-        String part1 = inputString.substring(0, sepIndex);
-        String part2 = inputString.substring(sepIndex + 1);
+    // 3. Считаем текущий коэффициент
+    double k = calculateCurrentK();
 
-        scale = part1.toFloat();
-        temp = part2.toFloat();
+    // 4. Раз в 10 минут отправляем данные и сохраняем состояние
+    static uint32_t sendTimer = 0;
+    if (millis() - sendTimer > 600000 || sendTimer == 0) {
+        sendTimer = millis();
+        
+        sendDataToCloud(currentT, currentW, k);
+        
+        prefs.putDouble("sumT", sumT);
+        prefs.putDouble("sumW", sumW);
+        prefs.putDouble("sumT2", sumT2);
+        prefs.putDouble("sumTW", sumTW);
+        prefs.putUInt("count", count);
+        
+        Serial.printf("Saved: T=%.2f, W=%.2f, K=%.6f, C=%d\n", currentT, currentW, k, count);
+    }
 
-        Serial.print("Первое число: ");
-        Serial.println(scale, 4);
-        Serial.print("Второе число: ");
-        Serial.println(temp, 4);
-        newData = true;
-      } else {
-        Serial.println("Ошибка: нет символа '/' в строке");
-      }
-  }
-
-  if (newData) {
-    HTTPGET();
-    newData = false;
-  }
-}
-
-void ConnectWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin("11", "Alexey17");
-
-  uint32_t start_time = millis();
-  
-  while (WiFi.status() != WL_CONNECTED && millis() - start_time < 2 * 60 * 1000) {        
-    delay(1000);
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    ESP.restart();
-  }
-
-  Serial.println("Connected!");
-}
-
-void HTTPGET() {
-
-  String req = "http://open-monitoring.online/get?cid=4464&key=qitHUa&p1=";      // замените на свою реальную строку
-  req += scale;
-  req += "&p2=";
-  req += temp;
-    
-  HTTPClient http;
-  http.begin(req);
-  
-  if (http.GET() <= 0) Serial.println("HTTP Error!");
-  else Serial.println("HTTP Success!");
-  
-  http.end();
+    delay(10000); // Проверка раз в 10 секунд
 }

@@ -1,4 +1,5 @@
 #include "Enumerations.h"
+#include <EEManager.h>
 
 #define USE_LOG Serial                            // удобный отладчик через Serial (закомментируй эту строку чтобы отключить)
 void logHelper(const __FlashStringHelper* msg, const char* func, const char* file, int line) {          // функция удобного логирования
@@ -30,6 +31,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #include "GSM_Handler.h"
 
 #define WORK_MODE 0                               // режим работы: обычная работа (1) / калибровка (0)
+#define REF_WEIGHT 5000.0f                        // калибровочная масса для алгоритма подбора компенсации температурного дрейфа
 
 #define RST_PIN 9                                 // пин RST на SIM800L
 #define SCL_PIN 8                                 // SCL пин HX711
@@ -39,12 +41,24 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #define RED_PIN 5                                 // красный цвет RGB светодиода
 #define GREEN_PIN 4                               // зеленый цвет
 #define BLUE_PIN 3                                // пин кнопки
-#define STANDART_NOISE 50                         // амплитуда стандартного шума весовых датчиков
+
+struct ModelEEData {                        // структура данных для хранения их в EEPROM
+  uint8_t modelType = 0;            // тип модели, которая показала себя наилучшим образом
+  float params[4] = {0,0,0,0};      // параметры в поправочной функции наилучшей модели
+  bool calibrated = false;          // была ли калибровка?
+};
 
 
 SystemState currentState = (WORK_MODE) ? SystemState::WAKEUP : SystemState::CALIBRATION;
+
 uint32_t stateTimer = 0;
 bool pendingTare = false;
+ModelEEData calibData;
+EEManager memory(calibData);                      // Объект менеджера памяти
+
+#include "Calibration.h"
+
+ScaleAutoCalibrator calibrator(REF_WEIGHT);
 
 AsyncLed led(RED_PIN, GREEN_PIN, BLUE_PIN);
 GyverDS18Single ds(DS_PIN);
@@ -68,6 +82,7 @@ void setup() {
 void loop() {
     led.tick();
     butt.tick();
+    memory.tick();
 
     if (butt.hold())    {
         pendingTare = true;                         // подняли флаг. После WAKEUP обработаем его
@@ -117,24 +132,13 @@ void loop() {
 
         // ------------------------------------- Особые состояния -------------------------------------
         case SystemState::CALIBRATION:
-            static uint32_t calibration_timer = millis(), reading_timer = millis();
-            if (millis() - reading_timer >= 2000) {
-                scales.tick();
-                reading_timer = millis();
-            }
-
-            if (millis() - calibration_timer >= 1.6 * 60 * 1000) {
-                Serial1.print(sensorData.weightKg);
-                Serial1.print("/");
-                Serial1.println(sensorData.tempC);
-                calibration_timer = millis();
-            }
+            
             break;
 
         case SystemState::TARE_PROCESS:
-            int8_t tare_state = scales.sensorTare();
-            if (tare_state == 1)    led.setMode(LedModes::OK);
-            else if (!tare_state)   led.setMode(LedModes::ERROR);
+            ScalesState tare_state = scales.sensorTare();
+            if (tare_state == ScalesState::SUCCESS)    led.setMode(LedModes::OK);
+            else if (tare_state == ScalesState::ERROR)   led.setMode(LedModes::ERROR);
             changeState(SystemState::MEASURE);
             break;
         // ------------------------------------- Особые состояния -------------------------------------
