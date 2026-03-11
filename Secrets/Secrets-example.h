@@ -1,0 +1,1 @@
+#define FUNCTION_ADDRESS ""                                                                                          // адрес функции yandex iot core

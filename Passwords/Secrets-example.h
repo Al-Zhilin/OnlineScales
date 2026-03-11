@@ -1,1 +1,0 @@
-#define MONITORING_LINK ""                                                   //ссылка для HTTP запроса на OpenMonitoring, вплоть до "&p1="
