@@ -24,8 +24,9 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #include <EEManager.h>
 #include <uButton.h>
 #include <EEManager.h>
+#include <GyverPower.h>
 #include "Sensors.h"
-#include "Passwords/Secrets.h"
+#include "Secrets/Secrets.h"
 #include "Led_UI.h"
 #include "PowerManager.h"
 #include "GSM_Handler.h"
@@ -46,7 +47,8 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 
 constexpr uint32_t DATA_SEND_PERIOD = 30*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
 
-SystemState currentState = SystemState::WAKEUP;
+SystemState currentState = SystemState::WAKEUP_SENSORS;
+ModificationRequest external_request = ModificationRequest::NONE;
 
 uint32_t stateTimer = 0;
 
@@ -54,10 +56,10 @@ AsyncLed led(RED_PIN, GREEN_PIN, BLUE_PIN);
 ScalesManager scales(11.472, DT_PIN, SCL_PIN);
 ScaleAutoCalibrator calibrator(REF_WEIGHT);
 TempManager tempSensor(DS_PIN);
-InputHandler inputHanler(BUTT_PIN, CALIB_SWITCH_PIN, currentState, calibrator);
+InputHandler inputHanler(BUTT_PIN, CALIB_SWITCH_PIN, calibrator, external_request, currentState);
 
-void changeState(SystemState newState) {                // функция переключения состояния FSM. С помощью PREV_STATE помогает "гостить" в определенном состоянии и возвращаться обратно, нужно в некоторых случаях
-    static SystemState previousState = SystemState::WAKEUP;
+void changeFSMState(SystemState newState) {                // функция переключения состояния FSM. С помощью PREV_STATE помогает "гостить" в определенном состоянии и возвращаться обратно, нужно в некоторых случаях
+    static SystemState previousState = SystemState::WAKEUP_SENSORS;
 
     if (newState == SystemState::PREV_STATE)    currentState = previousState;
     else {
@@ -83,39 +85,40 @@ void loop() {
     led.tick();
     inputHanler.tick();
     static uint32_t sendState_timer = millis();
+
+    if (external_request == ModificationRequest::TARE)  changeFSMState(SystemState::TARE_PROCESS);          // по событию вызываем тарирование, оно потом самостоятельно откатит current_state на состояние до вызова
     
     switch (currentState) {
-        case SystemState::WAKEUP:
-            // пробудили весы
-            // пробудили ds18
+        case SystemState::WAKEUP_SENSORS:
+            scales.sleepMode(false);
 
-            changeState(SystemState::MEASURE);
+            changeFSMState(SystemState::MEASURE);
             break;
 
         case SystemState::MEASURE:                          // читаем датчики
             scales.tick();
             tempSensor.tick();
 
-            if (millis() - sendState_timer >= DATA_SEND_PERIOD) {                          // отправляем по заданному периоду
-                changeState(SystemState::CONNECT_GSM);
+            if (millis() - sendState_timer >= DATA_SEND_PERIOD) {                          // отправляем по заданному периоду или по force_send
+                changeFSMState(SystemState::START_MODEM);
                 sendState_timer = millis();
             }
-            else changeState(SystemState::ERROR_HANDLING);
+            else changeFSMState(SystemState::ERROR_HANDLING);
             break;
 
         // ------------------- Особая часть цикла работы, вызывается по таймеру -------------------
-        case SystemState::CONNECT_GSM:
+        case SystemState::START_MODEM:
             // включаем модем
             // подключаем к сети
             // проверяем готовность к передаче данных
 
-            changeState(SystemState::DATA_SEND);
+            changeFSMState(SystemState::DATA_SEND);
             break;
 
         case SystemState::DATA_SEND:
             // читаем входящие данные/отправляем на сервер новые
             // проверяем наличие ошибок
-            changeState(SystemState::ERROR_HANDLING);
+            changeFSMState(SystemState::ERROR_HANDLING);
             break;
 
         case SystemState::SLEEP_MODEM:
@@ -129,24 +132,19 @@ void loop() {
             // сюда будем попадать после возникновения ошибок
             // пытаемся их починить, откорректировать работу
             // готовим данные о возникших неполадках/трудностях работы к отправке на сервер
-            changeState(SystemState::SLEEP);
+            changeFSMState(SystemState::SLEEP_SENSORS);
             break;
 
         case SystemState::SLEEP_SENSORS:
-            // усыпляем весы и остальную периферию
+            scales.sleepMode(false);
 
-            changeState(SystemState::WAKEUP);               // ставим состояние, которое начнет выполняться после выхода из сна
+            //уходим в сон
+
+            changeFSMState(SystemState::WAKEUP_SENSORS);               // ставим состояние, которое начнет выполняться после выхода из сна
             break;
 
 
         // ------------------------------------- Особые состояния (не входят в стандартный цикл работы) -------------------------------------
-        case SystemState::START_CALIBRATION:
-
-            break;
-
-        case SystemState::END_CALIBRATION:
-
-            break;
 
         case SystemState::CALIBRATION:
             static uint32_t send_timer = 0, cal_tick_timer = 0, rls_timer = 0;
@@ -164,7 +162,7 @@ void loop() {
                 rls_timer = millis();
             }
 
-            if (millis() - send_timer > (uint32_t)(5 * 60 * 1000)) { // отправка данных через Serial
+            if (millis() - send_timer > 5 * 60 * 1000UL) { // отправка данных через Serial
                 Serial1.print(sensorData.weightKg, 2);             // неотфильтрованная масса
                 Serial1.print("/");
                 Serial1.print(sensorData.tempC, 1);                // температура
@@ -181,7 +179,7 @@ void loop() {
             ScalesState tare_state = scales.sensorTare();
             if (tare_state == ScalesState::SUCCESS)    led.setMode(LedModes::OK);
             else if (tare_state == ScalesState::ERROR)   led.setMode(LedModes::ERROR);
-            changeState(SystemState::PREV_STATE);                                                // возвращаемся в то состояние, откуда было вызвано тарирование
+            changeFSMState(SystemState::PREV_STATE);                                                // возвращаемся в то состояние, откуда было вызвано тарирование
             break;
         }
         

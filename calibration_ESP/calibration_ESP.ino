@@ -66,7 +66,7 @@ void loop() {
 
 void ConnectWiFi() {
   WiFi.mode(WIFI_STA);
-  WiFi.begin("11", "Alexey17");
+  WiFi.begin("Гостевая сеть", "");
 
   uint32_t start_time = millis();
   

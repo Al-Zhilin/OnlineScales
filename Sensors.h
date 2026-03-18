@@ -55,9 +55,13 @@ class ScalesManager {
       }
     }
 
+    void sleepMode(bool mode) {
+      _scales->sleepMode(mode);
+    }
+
     ScalesState tick() {                                  // обновляем фильтр
       if (!_scales->available())  {
-        LOG("Tick failed! Busy!");
+        //LOG("Tick failed! Busy!");
         return ScalesState::BUSY;
       }
 
@@ -65,12 +69,13 @@ class ScalesManager {
       int32_t new_weight = _scales->read();
 
       if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;         // адаптивный коэффициент
-      else k = 0.1;
+      else k = 0.05;
       _filtered += (new_weight - _filtered) * k;
 
       sensorData.weightGr = _filtered / _calibation_factor;        // обновили данные: попугаи -> вес в граммах
       sensorData.weightKg = sensorData.weightGr / 1000;            // еще и вес в кг тоже обновили
 
+      Serial.println(new_weight + String(",") + _filtered + ", " + sensorData.weightGr);
       return ScalesState::SUCCESS;
     }
 };

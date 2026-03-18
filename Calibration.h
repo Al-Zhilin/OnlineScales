@@ -49,8 +49,8 @@ class RLSModel {
     }
     
     void update(const float* x, float y) {                                // обновление модели
-      if (fabsf(x[0] - last_t) < 0.005f) return; 
-      last_t = x[0];
+      if (fabsf(x[N-2] - last_t) < 0.005f) return;          // если данные слабо изменились - не выполняем обновление модели.
+      last_t = x[N-2];
 
       float K[N], Px[N], xPx = 0.0f;
       for (int i = 0; i < N; i++) {
