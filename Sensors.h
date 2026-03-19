@@ -55,7 +55,7 @@ class ScalesManager {
       }
     }
 
-    void sleepMode(bool mode) {
+    void sleepMode(bool mode) {                           // вкл/выкл режим сна
       _scales->sleepMode(mode);
     }
 

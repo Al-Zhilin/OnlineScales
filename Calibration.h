@@ -115,16 +115,18 @@ class ScaleAutoCalibrator {
     }
 
     void startCalibration() {                         // начинаем калибровку
-      if (isCalibrating) {
-        LOG("Already Calibrating! Use Reset function before start new calibration!");
-        led.setMode(LedModes::ERROR);
+      if (isCalibrating)  {
+        LOG("Already Calibrating! Resetting last params... (eeprom data won`t clear)");
+        this->resetCalibration();
       }
+
       else {
-        led.setMode(LedModes::OK);
         isCalibrating = true;
         updateCount = 0;
         linearError = quadraticError = cubicError = 0;
       }
+
+      led.setMode(LedModes::OK);
     }
 
     void finishCalibration() {                        // заканчиваем
@@ -142,7 +144,7 @@ class ScaleAutoCalibrator {
       }
     }
 
-    void resetCalibration() {                         // сбрасываем калибровку всех моделей
+    void resetCalibration() {                         // сбрасываем калибровку всех моделей, данные в EEPROM не трогаются
       linearModel.reset();
       quadraticModel.reset();
       cubicModel.reset();
@@ -158,7 +160,6 @@ class ScaleAutoCalibrator {
 
       for(int i = 0; i < 4; i++) calibData.params[i] = 0;
 
-      calib_memory.updateNow();
       led.setMode(LedModes::OK);
       LOG("Reset complete!");
     }
@@ -180,10 +181,9 @@ class ScaleAutoCalibrator {
     }
     
     bool loadData() {
-      if (!calibData.calibrated) return false;
+      if (!calibData.calibrated)  return false;
       
       bestModel = calibData.modelType;
-      // Используем метод setTheta вместо опасного const_cast
       if (bestModel == 0) {
           linearModel.setTheta(calibData.params);
           linearModel.resetP(0.1f);

@@ -99,11 +99,19 @@ void loop() {
             scales.tick();
             tempSensor.tick();
 
-            if (millis() - sendState_timer >= DATA_SEND_PERIOD) {                          // отправляем по заданному периоду или по force_send
+            if (external_request == ModificationRequest::START_CALIBRATION) {                   // если запрошена калибровка, переходим на нее
+                changeFSMState(SystemState::CALIBRATION);
+                led.setMode(LedModes::OK);
+                LOG("Calibration started");
+            }
+
+            else if (millis() - sendState_timer >= DATA_SEND_PERIOD) {                          // отправляем по заданному периоду или по force_send
                 changeFSMState(SystemState::START_MODEM);
                 sendState_timer = millis();
+                LOG("Starting Modem states...");
             }
             else changeFSMState(SystemState::ERROR_HANDLING);
+
             break;
 
         // ------------------- Особая часть цикла работы, вызывается по таймеру -------------------
@@ -118,12 +126,13 @@ void loop() {
         case SystemState::DATA_SEND:
             // читаем входящие данные/отправляем на сервер новые
             // проверяем наличие ошибок
-            changeFSMState(SystemState::ERROR_HANDLING);
+            changeState(SystemState::SLEEP_MODEM);
             break;
 
         case SystemState::SLEEP_MODEM:
             // отключаемся от сети
             // переводим модем в режим сна
+            changeFSMState(SystemState::ERROR_HANDLING);
             break;
         // ------------------- Особая часть цикла работы, вызывается по таймеру -------------------
 
@@ -148,6 +157,12 @@ void loop() {
 
         case SystemState::CALIBRATION:
             static uint32_t send_timer = 0, cal_tick_timer = 0, rls_timer = 0;
+
+            if (external_request == ModificationRequest::END_CALIBRATION) {                                                   // переключатель перевели в режим нормальной работы
+                changeFSMState(SystemState::MEASURE);                           // ставим на MEASURE чтобы сразу прогнать стандартный цикл, state пробуждения нам не нужен, датчики у нас не спали
+                calibrator.finishCalibration();                                 // при выходе из режима калбировки заканчиваем процесс и сохраняем данные о новой моедил
+                LOG("Calibration finished!");
+            }
             
             if (millis() - cal_tick_timer >= 500) {
                 scales.tick();
@@ -173,6 +188,7 @@ void loop() {
                 send_timer = millis();
             }
             break;
+
 
         case SystemState::TARE_PROCESS:
         {
