@@ -1,26 +1,28 @@
-struct ModelEEData {                        // структура данных для хранения их в EEPROM
-  uint8_t modelType = 0;            // тип модели, которая показала себя наилучшим образом
-  float params[4] = {0,0,0,0};      // параметры в поправочной функции наилучшей модели
+#include <math.h>
+
+// __attribute__((packed)) защищает от непредвиденных отступов (padding) в памяти EEPROM
+struct __attribute__((packed)) ModelEEData {
+  uint8_t modelType = 0;            // 0 - линейная, 1 - квадратичная, 2 - кубическая
+  float params[4] = {0, 0, 0, 0};   // параметры функции наилучшей модели
   bool calibrated = false;          // была ли калибровка?
 } calibData;
 
 extern AsyncLed led;
-
-EEManager calib_memory(calibData);                      // Объект менеджера памяти
+EEManager calib_memory(calibData);
 
 template <int N>
 class RLSModel {
   private:
-    float theta[N] = {};                                // крэффициенты формули компенсации
-    float P[N][N];                                      // матрица неуверенности
-    float lambda = 0.999f;                              // коэффициент забывания
-    float last_t = -999.0f;                             // для игнорирования стоячей температуры
+    float theta[N] = {};            // коэффициенты компенсации
+    float P[N][N];                  // матрица ковариации (неуверенности)
+    float lambda = 0.999f;          // коэффициент забывания
+    float last_t = -999.0f;         // для игнорирования "стоячей" температуры
 
   public:
     RLSModel() { reset(); }
 
     void reset() {
-      for (int i = 0; i < N; i++) theta[i] = 0;
+      for (int i = 0; i < N; i++) theta[i] = 0.0f;
       resetP(100.0f);
       last_t = -999.0f;
     }
@@ -31,28 +33,33 @@ class RLSModel {
       }
     }
 
-    void setTheta(const float* source) {                                  // уставнока коэффициентов (например, при чтении из памяти)
-        if (source == nullptr) return;
-        for (int i = 0; i < N; i++) theta[i] = source[i];
+    void setTheta(const float* source) {
+      if (source == nullptr) return;
+      for (int i = 0; i < N; i++) theta[i] = source[i];
     }
 
-    float getUncertainty() const {                                        // получение "неуверенности" модели
+    const float* getTheta() const { return theta; }
+
+    float getUncertainty() const {
       float trace = 0;
       for (int i = 0; i < N; i++) trace += P[i][i];
-      
-      // Исходный след матрицы при старте: N * 100.0f. 
-      // Нормализуем так, чтобы старт был 100%, а сходимость стремилась к 0%
+      // Защита от деления на 0 и нормализация
       float initial_trace = N * 100.0f;
-      float normalized = (trace / initial_trace) * 100.0f;
-      
-      return normalized;
+      return (trace / initial_trace) * 100.0f;
     }
-    
-    void update(const float* x, float y) {                                // обновление модели
-      if (fabsf(x[N-2] - last_t) < 0.005f) return;          // если данные слабо изменились - не выполняем обновление модели.
-      last_t = x[N-2];
 
-      float K[N], Px[N], xPx = 0.0f;
+    // current_t вынесен явно для большей читаемости и надежности
+    void update(const float* x, float y, float current_t) {
+      // Защита от заражения матрицы NaN значениями (критично для матричных операций)
+      if (isnan(y) || isnan(current_t) || isinf(y)) return; 
+      
+      // Дедбэнд фильтр (защита от сингулярности)
+      if (fabsf(current_t - last_t) < 0.005f) return;
+      last_t = current_t;
+
+      float K[N], Px[N];
+      float xPx = 0.0f;
+      
       for (int i = 0; i < N; i++) {
         Px[i] = 0.0f;
         for (int j = 0; j < N; j++) Px[i] += P[i][j] * x[j];
@@ -60,6 +67,9 @@ class RLSModel {
       for (int i = 0; i < N; i++) xPx += x[i] * Px[i];
       
       float denom = lambda + xPx;
+      // Предотвращение деления на ноль (в RLS denom всегда должен быть > 0)
+      if (denom < 1e-6f) return; 
+
       for (int i = 0; i < N; i++) K[i] = Px[i] / denom;
       
       float error = y - predict(x);
@@ -70,26 +80,26 @@ class RLSModel {
         kxP[j] = 0;
         for (int i = 0; i < N; i++) kxP[j] += x[i] * P[i][j];
       }
+      
+      float trace = 0;
       for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
           P[i][j] = (P[i][j] - K[i] * kxP[j]) / lambda;
         }
+        trace += P[i][i];
       }
 
-      float trace = 0;
-      for (int i = 0; i < N; i++) trace += P[i][i];               // защита от "ковариационного взрыва"
-      if (trace > 1000.0f) {
-          resetP(100.0f);
+      // Защита от "ковариационного взрыва" (covariance wind-up)
+      if (trace > 1000.0f || isnan(trace)) {
+        resetP(100.0f);
       }
     }
-    
+
     float predict(const float* x) const {
       float res = 0.0f;
       for (int i = 0; i < N; i++) res += theta[i] * x[i];
       return res;
     }
-
-    const float* getTheta() const { return theta; }
 };
 
 class ScaleAutoCalibrator {
@@ -98,68 +108,72 @@ class ScaleAutoCalibrator {
     RLSModel<3> quadraticModel;
     RLSModel<4> cubicModel;
     
-    float linearError = 0.0f, quadraticError = 0.0f, cubicError = 0.0f;   // ошибки предсказаний каждой моедли
-    uint16_t updateCount = 0;
+    // Используем EMA (скользящее среднее) вместо кумулятивной суммы
+    float linearErrorEMA = 0.0f;
+    float quadraticErrorEMA = 0.0f;
+    float cubicErrorEMA = 0.0f;
+    
+    uint32_t samplesCount = 0; // uint32_t хватит на годы
     uint8_t bestModel = 0; 
     float referenceMass;
     bool isCalibrating = false;
 
-    float normT(float t) const { return (t - 25.0f) / 10.0f; }            // для корректных расчетов у моделей высоких порядков введдем нормализацию входной температуры
+    float normT(float t) const { return (t - 25.0f) / 10.0f; }
 
   public:
     ScaleAutoCalibrator(float refMass) : referenceMass(refMass) {}
 
     void begin(uint16_t addr) {
       calib_memory.begin(addr, 'Z');
-      if (calibData.calibrated) loadData();           // если ранее была произведена калибровка - подтягиваем все параметры для лучшей модели
+      if (calibData.calibrated) loadData();
     }
 
-    void startCalibration() {                         // начинаем калибровку
-      if (isCalibrating)  {
-        LOG("Already Calibrating! Resetting last params... (eeprom data won`t clear)");
-        this->resetCalibration();
+    void startCalibration() {
+      if (isCalibrating) {
+        LOG("Already Calibrating! Resetting live params...");
+        resetCalibrationModels();
       }
-
-      else {
-        isCalibrating = true;
-        updateCount = 0;
-        linearError = quadraticError = cubicError = 0;
-      }
-
+      
+      isCalibrating = true;
+      samplesCount = 0;
+      linearErrorEMA = quadraticErrorEMA = cubicErrorEMA = 0.0f;
       led.setMode(LedModes::OK);
     }
 
-    void finishCalibration() {                        // заканчиваем
+    void finishCalibration() {
       if (!isCalibrating) {
         LOG("Calibration has not been started!");
         led.setMode(LedModes::ERROR);
+        return;
       }
-      else {
-        isCalibrating = false;
-        if (updateCount > 0) {
-          calcBestModel();
-          saveData();
-        }
-        led.setMode(LedModes::OK);
+      
+      isCalibrating = false;
+      if (samplesCount > 10) { // Защита от сохранения после 1-2 случайных тиков
+        calcBestModel();
+        saveData();
       }
+      led.setMode(LedModes::OK);
     }
 
-    void resetCalibration() {                         // сбрасываем калибровку всех моделей, данные в EEPROM не трогаются
+    // Отдельный метод для сброса только математики (без EEPROM)
+    void resetCalibrationModels() {
       linearModel.reset();
       quadraticModel.reset();
       cubicModel.reset();
+      samplesCount = 0;
+      linearErrorEMA = quadraticErrorEMA = cubicErrorEMA = 0.0f;
+      bestModel = 0;
+    }
 
-      bestModel = 0;  
+    void resetCalibration() {
+      resetCalibrationModels();
       isCalibrating = false;
-      updateCount = 0;
-
-      linearError = quadraticError = cubicError = 0;
 
       calibData.modelType = 0;
       calibData.calibrated = false;
+      for(int i = 0; i < 4; i++) calibData.params[i] = 0.0f;
 
-      for(int i = 0; i < 4; i++) calibData.params[i] = 0;
-
+      calib_memory.updateNow(); // Желательно сразу зафиксировать сброс в памяти
       led.setMode(LedModes::OK);
       LOG("Reset complete!");
     }
@@ -172,119 +186,131 @@ class ScaleAutoCalibrator {
       else if (bestModel == 1) params = quadraticModel.getTheta();
       else params = cubicModel.getTheta();
       
-      // Копируем только реально существующие параметры
       for (int i = 0; i < 4; i++) {
-          calibData.params[i] = (params && i < (bestModel + 2)) ? params[i] : 0.0f;
+        calibData.params[i] = (params && i < (bestModel + 2)) ? params[i] : 0.0f;
       }
       calibData.calibrated = true;
       calib_memory.updateNow();
     }
     
     bool loadData() {
-      if (!calibData.calibrated)  return false;
+      if (!calibData.calibrated) return false;
       
       bestModel = calibData.modelType;
+      // Сброс ковариации до малого значения, так как веса уже подобраны
       if (bestModel == 0) {
-          linearModel.setTheta(calibData.params);
-          linearModel.resetP(0.1f);
+        linearModel.setTheta(calibData.params);
+        linearModel.resetP(0.1f);
       } else if (bestModel == 1) {
-          quadraticModel.setTheta(calibData.params);
-          quadraticModel.resetP(0.1f);
+        quadraticModel.setTheta(calibData.params);
+        quadraticModel.resetP(0.1f);
       } else {
-          cubicModel.setTheta(calibData.params);
-          cubicModel.resetP(0.1f);
+        cubicModel.setTheta(calibData.params);
+        cubicModel.resetP(0.1f);
       }
       return true;
     }
 
     void printSavedModelData() {
-        #ifdef USE_LOG
-        USE_LOG.println(F("\n=== Сохраненные данные калибровки ==="));
-        
-        if (!calibData.calibrated) {
-            USE_LOG.println(F("Статус: НЕТ ДАННЫХ (не откалибровано)"));
-            USE_LOG.println(F("=====================================\n"));
-            return;
-        }
-
-        USE_LOG.println(F("Статус: ОТКАЛИБРОВАНО"));
-        
-        USE_LOG.print(F("Лучшая модель: "));
-        uint8_t n_params = 0;
-        if (calibData.modelType == 0) {
-            USE_LOG.println(F("Линейная (2 параметра)"));
-            n_params = 2;
-        } else if (calibData.modelType == 1) {
-            USE_LOG.println(F("Квадратичная (3 параметра)"));
-            n_params = 3;
-        } else {
-            USE_LOG.println(F("Кубическая (4 параметра)"));
-            n_params = 4;
-        }
-
-        USE_LOG.println(F("Коэффициенты (Theta):"));
-        // Выводим с высокой точностью (6 знаков), так как числа могут быть очень маленькими
-        for (uint8_t i = 0; i < n_params; i++) {
-            USE_LOG.print(F("  ["));
-            USE_LOG.print(i);
-            USE_LOG.print(F("] = "));
-            USE_LOG.println(calibData.params[i], 6); 
-        }
+      #ifdef USE_LOG
+      USE_LOG.println(F("\n=== Сохраненные данные калибровки ==="));
+      
+      if (!calibData.calibrated) {
+        USE_LOG.println(F("Статус: НЕТ ДАННЫХ (не откалибровано)"));
         USE_LOG.println(F("=====================================\n"));
-        #endif
-        
-        // Для визуального подтверждения моргнем диодом
-        led.setMode(LedModes::WAIT); 
+        return;
+      }
+
+      USE_LOG.println(F("Статус: ОТКАЛИБРОВАНО"));
+      USE_LOG.print(F("Лучшая модель: "));
+      
+      uint8_t n_params = calibData.modelType + 2;
+      if (calibData.modelType == 0) USE_LOG.println(F("Линейная (2 параметра)"));
+      else if (calibData.modelType == 1) USE_LOG.println(F("Квадратичная (3 параметра)"));
+      else USE_LOG.println(F("Кубическая (4 параметра)"));
+
+      USE_LOG.println(F("Коэффициенты (Theta):"));
+      for (uint8_t i = 0; i < n_params; i++) {
+        USE_LOG.print(F("  [")); USE_LOG.print(i); USE_LOG.print(F("] = "));
+        USE_LOG.println(calibData.params[i], 6); 
+      }
+      USE_LOG.println(F("=====================================\n"));
+      #endif
+      
+      led.setMode(LedModes::WAIT); 
     }
     
-    void calibrationStep() {        // скармливаем алгоритму новые данные
+    void calibrationStep() {
       if (!isCalibrating) return;
-      updateCount++;
+      samplesCount++;
       
       float t = normT(sensorData.tempC);
       float error = sensorData.weightGr - referenceMass;
       
+      // Векторы признаков
       float xL[2] = {t, 1.0f};
       float xQ[3] = {t * t, t, 1.0f};
       float xC[4] = {t * t * t, t * t, t, 1.0f};
 
-      linearError += fabsf(error - linearModel.predict(xL));
-      quadraticError += fabsf(error - quadraticModel.predict(xQ));
-      cubicError += fabsf(error - cubicModel.predict(xC));
+      // Текущие ошибки моделей
+      float errL = fabsf(error - linearModel.predict(xL));
+      float errQ = fabsf(error - quadraticModel.predict(xQ));
+      float errC = fabsf(error - cubicModel.predict(xC));
 
-      linearModel.update(xL, error);
-      quadraticModel.update(xQ, error);
-      cubicModel.update(xC, error);
+      // Обновление скользящего среднего (EMA)
+      if (samplesCount <= 1) {
+        linearErrorEMA = errL;
+        quadraticErrorEMA = errQ;
+        cubicErrorEMA = errC;
+      } else {
+        const float alpha = 0.02f; // Настраиваемая скорость реакции метрики (2%)
+        linearErrorEMA = (1.0f - alpha) * linearErrorEMA + alpha * errL;
+        quadraticErrorEMA = (1.0f - alpha) * quadraticErrorEMA + alpha * errQ;
+        cubicErrorEMA = (1.0f - alpha) * cubicErrorEMA + alpha * errC;
+      }
 
-      calcBestModel();
+      // Обновляем модели (передаем t явно)
+      linearModel.update(xL, error, t);
+      quadraticModel.update(xQ, error, t);
+      cubicModel.update(xC, error, t);
+
+      if (samplesCount > 10) calcBestModel(); // Даем моделям "прогреться"
     }
 
-    float getUncertainty() const {                                    // Получить "неуверенность"
+    float getUncertainty() const {
       if (bestModel == 0) return linearModel.getUncertainty();
       if (bestModel == 1) return quadraticModel.getUncertainty();
       return cubicModel.getUncertainty();
-
     }
     
-    float compensate(float temperature, float rawWeight) {            // компенсировать вес относительно температуры
+    // Оптимизированная компенсация (без массивов, схема Горнера)
+    float compensate(float temperature, float rawWeight) {
+      if (!calibData.calibrated) return rawWeight;
+
       float t = normT(temperature);
-      float est = 0;
+      float est = 0.0f;
       
-      if (bestModel == 0) {
-          float x[2] = {t, 1.0f}; est = linearModel.predict(x);
-      } else if (bestModel == 1) {
-          float x[3] = {t * t, t, 1.0f}; est = quadraticModel.predict(x);
-      } else {
-          float x[4] = {t * t * t, t * t, t, 1.0f}; est = cubicModel.predict(x);
+      // Берем коэффициенты активной модели (из ОЗУ, они обновляются в реальном времени при калибровке)
+      const float* p = nullptr;
+      if (bestModel == 0) p = linearModel.getTheta();
+      else if (bestModel == 1) p = quadraticModel.getTheta();
+      else p = cubicModel.getTheta();
+
+      // Метод Горнера для быстрого вычисления полинома
+      // p = { a, b, c, d } соответствует a*t^3 + b*t^2 + c*t + d
+      est = p[0];
+      for (int i = 1; i < bestModel + 2; i++) {
+        est = est * t + p[i];
       }
+      
       return rawWeight - est;
     }
 
-    void calcBestModel() {                                            // на осноые ошибок предсказания просчитываем лучшую модель на текущий момент
-      if (updateCount == 0) return;
-      float sLin = (linearError / updateCount) * 1.0f; 
-      float sQuad = (quadraticError / updateCount) * 1.05f;
-      float sCub = (cubicError / updateCount) * 1.10f;
+    void calcBestModel() {
+      // Штрафы за сложность модели
+      float sLin = linearErrorEMA * 1.0f; 
+      float sQuad = quadraticErrorEMA * 1.05f;
+      float sCub = cubicErrorEMA * 1.10f;
       
       if (sLin <= sQuad && sLin <= sCub) bestModel = 0;
       else if (sQuad <= sCub) bestModel = 1;
