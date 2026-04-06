@@ -25,6 +25,7 @@ class InputHandler {
       bool switch_val = !digitalRead(switch_pins);     // ручное чтение состояний переключателя. true - вкл режим калибровки
 
       if (switch_val != switch_state && millis() - switch_timer >= 500) {                   // дернули переключатель режима работы
+        switch_state = switch_val;
         if (switch_val) external_request = ModificationRequest::START_CALIBRATION;        // пользователь включил режим калибровки
         else external_request = ModificationRequest::END_CALIBRATION;      // пользователь выключил режим калбировки
       }
