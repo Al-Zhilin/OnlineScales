@@ -26,8 +26,6 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #include <EEManager.h>
 #include <uButton.h>
 #include <GyverPower.h>
-#include <TinyGsmClient.h>
-#include <ArduinoHttpClient.h>
 #include "Sensors.h"
 #include "Secrets/Secrets.h"
 #include "Led_UI.h"

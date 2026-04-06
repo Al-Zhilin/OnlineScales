@@ -2,49 +2,86 @@
 #define SIM800L_MANAGER_H
 
 #include <Arduino.h>
-#include <PPP.h>
 #include <NetworkClientSecure.h>
+#include <PPP.h>
 
-// Строгие статусы для контроля потока выполнения
+// Добавлены статусы IDLE и BUSY для конечного автомата
 enum class ModemStatus {
-    SUCCESS,
-    SUCCESS_WITH_RESTARTS, // Успешно, но потребовались перезагрузки (для логов)
-    ERR_BOOT_TIMEOUT,      // Модем не отвечает на AT-команды
-    ERR_NO_SIM,            // SIM-карта не обнаружена
-    ERR_NO_SIGNAL,         // Нет сети (CSQ слишком мал)
-    ERR_PPP_TIMEOUT,       // Не удалось поднять GPRS-сессию
-    ERR_SERVER_CONNECT,    // Не удалось подключиться к серверу по HTTPS
-    ERR_HTTP_TIMEOUT       // Сервер не ответил вовремя
+    IDLE,                               // простой
+    BUSY,                               // занят выполнением
+    SUCCESS,                            // успешность выполнения
+    SUCCESS_WITH_RESTARTS,              // выполнено успешно, но понадобились перезагрузки
+    ERR_NO_SIM,                         // ошибка с SIM картой
+    ERR_BOOT_TIMEOUT,                   // ошибка boot таймаута
+    ERR_PPP_TIMEOUT,                    // ошибка подъема PPPoS
+    ERR_SERVER_CONNECT,                 // ошибка подключения к серверу
+    ERR_HTTP_TIMEOUT                    // ошибка отправки запроса (таймаут)
+};
+
+struct Config {
+    uint8_t pwr_pin;                    // пин управления питанием
+    uint8_t rst_pin;                    // пин, соединенный с RST SIM800L
+    uint8_t tx_pin;                     // TX pin
+    uint8_t rx_pin;                     // RX pin
+    const char* apn;                    // apn оператора
+};
+
+// Внутренние задачи и шаги автомата
+enum class JobType { NONE, INIT, REQUEST, POWER_OFF };
+enum class Step {
+    // Шаги инициализации
+    INIT_START, INIT_PWR_DELAY, INIT_RST_LOW, INIT_RST_HIGH,
+    INIT_AT_SEND, INIT_AT_WAIT, INIT_AT_DELAY,
+    INIT_SIM_DELAY, INIT_SIM_SEND, INIT_SIM_WAIT,
+    INIT_CSQ_SEND, INIT_CSQ_WAIT, INIT_CSQ_DELAY,
+    
+    // Шаги HTTP запроса
+    REQ_PPP_BEGIN, REQ_PPP_ATTACH_WAIT, REQ_PPP_CONN_WAIT,
+    REQ_HTTP_CONNECT, REQ_HTTP_WAIT_RES,
+    
+    // Шаги выключения
+    OFF_START, OFF_DELAY
 };
 
 class Sim800LManager {
 public:
-    struct Config {
-        int8_t tx_pin;
-        int8_t rx_pin;                      
-        int8_t rst_pin;
-        int8_t pwr_pin;
-        const char* apn;
-    };
-
     Sim800LManager(Config cfg);
 
-    // Этап 1: Включение, инициализация и базовая проверка (AT, SIM, Сигнал)
-    // max_retries - сколько раз можно аппаратно перезагружать модем при сбоях
-    ModemStatus initHardware(uint8_t max_retries = 3);
+    // Методы "запуска" процессов (возвращают управление мгновенно)
+    void startInitHardware(uint8_t max_retries);
+    void startRequest(const char* host, const char* path, const String& payload, String* responsePtr, uint32_t network_timeout_ms);
+    void startPowerOff();
 
-    // Этап 2: Поднятие стека PPP, отправка запроса и получение ответа
-    ModemStatus sendRequest(const char* host, const char* path, const String& payload, String& response, uint32_t network_timeout_ms = 40000);
-
-    // Этап 3: Корректное завершение сессии и полное обесточивание
-    void powerOff();
+    // Главный метод, который нужно вызывать в loop()
+    ModemStatus tick();
 
 private:
     Config _cfg;
     bool _isPppActive;
 
-    void hardwareReset();
-    String sendATCommand(const char* cmd, uint32_t timeout_ms);
+    // Переменные конечного автомата
+    JobType _currentJob = JobType::NONE;
+    Step _currentStep = Step::INIT_START;
+    unsigned long _timer = 0;
+    
+    // Счетчики попыток
+    uint8_t _maxRetries = 0;
+    uint8_t _attempts = 0;
+    uint8_t _subAttempts = 0;
+    bool _hardwareRestarted = false;
+
+    // Данные для HTTP запроса
+    const char* _host;
+    const char* _path;
+    String _payload;
+    String* _responsePtr;
+    uint32_t _networkTimeout;
+    NetworkClientSecure _client;
+
+    // Буфер для асинхронного чтения UART и HTTP
+    String _uartBuffer;
+
+    ModemStatus finishJob(ModemStatus status);
     void clearUART();
 };
 
