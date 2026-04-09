@@ -47,10 +47,6 @@ Config ModemConfig;
 #define CALIB_SWITCH_PIN 16                             // пин переключателя режимов работы
 #define WDT_TIMEOUT_MS 10000                            // период для WDT (миллисекунды)
 #define SLEEP_TIME_SEC 30                               // время сна между измерениями (секунлы)
-ModemConfig.pwr_pin = 4;                                // пин управления питанием SIM800L
-ModemConfig.rst_pin = 5;                                // пин, управляющий RST модема
-ModemConfig.tx_pin = 16;                                // пин TX от SIM800L
-ModemConfig.rx_pin = 17;                                // пин RS от SIM800L
 
 constexpr uint32_t DATA_SEND_PERIOD = 15*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
 
@@ -59,13 +55,16 @@ ModificationRequest external_request = ModificationRequest::FORCE_SEND;         
 
 uint32_t stateTimer = 0;
 uint8_t restart_reason = 0;                                // см. использование ниже
+String modemPayload = "";                                  // Буфер для сформированного запроса
+String serverResponse = "";                                // Буфер для ответа от VK API
+bool hasModemError = false;                                // Флаг для безопасного отключения при ошибках
 
 AsyncLed led(RED_PIN, GREEN_PIN, BLUE_PIN);
 ScalesManager scales(11.472, DT_PIN, SCL_PIN);
 ScaleAutoCalibrator calibrator(REF_WEIGHT);
 TempManager tempSensor(DS_PIN);
 InputHandler inputHanler(BUTT_PIN, CALIB_SWITCH_PIN, calibrator, external_request, currentState);
-Sim800LManager(ModemConfig);
+Sim800LManager modemManager(ModemConfig);
 
 void changeFSMState(SystemState newState) {                // функция переключения состояния FSM. С помощью PREV_STATE помогает "гостить" в определенном состоянии и возвращаться обратно, нужно в некоторых случаях
     static SystemState previousState = SystemState::WAKEUP_SENSORS;
@@ -82,6 +81,13 @@ void setup() {
     Serial.begin(9600);
     Serial1.begin(9600);
     inputHanler.begin();
+
+    modemPayload.reserve(1024);                             // Избегаем излишних проблем со String: заранее резервируем память
+    ModemConfig.pwr_pin = 4;                                // пин управления питанием SIM800L
+    ModemConfig.rst_pin = 5;                                // пин, управляющий RST модема
+    ModemConfig.tx_pin = 16;                                // пин TX от SIM800L
+    ModemConfig.rx_pin = 17;                                // пин RS от SIM800L
+
 
     led.begin();
     tempSensor.begin();
@@ -112,13 +118,10 @@ void loop() {
     switch (currentState) {
         case SystemState::WAKEUP_SENSORS:
             scales.sleepMode(false);
-
             changeFSMState(SystemState::MEASURE);
             break;
 
         case SystemState::MEASURE:                          // читаем датчики
-            static bool f_send = true;
-
             scales.tick();
             tempSensor.tick();
 
@@ -129,8 +132,27 @@ void loop() {
                 LOG("Calibration started");
             }
 
-            else if (millis() - sendState_timer >= DATA_SEND_PERIOD || f_send) {                          // отправляем по заданному периоду или по force_send
-                f_send = false;
+            else if (millis() - sendState_timer >= DATA_SEND_PERIOD || external_request == ModificationRequest::FORCE_SEND) {                          // отправляем по заданному периоду или по внешнему запросу на немедленную отправку
+                if (external_request == ModificationRequest::FORCE_SEND) {
+                    external_request = ModificationRequest::NONE;
+                }
+
+                hasModemError = false;
+
+                // --- 1. Формируем текст сообщения (с URL-кодированием переноса строки %0A) ---
+                String msg = "Отчет с весов:%0A"
+                             "Текущий вес: " + String(sensorData.weightKg, 2) + " кг%0A"
+                             "Температура: " + String(sensorData.tempC, 1) + " °C%0A"
+                             "Вес скомпенсированный: " + String(calibrator.compensate(sensorData.tempC, sensorData.weightGr) / 1000.0f, 2) + " кг%0A"
+                             "Неуверенность калибратора: " + String(calibrator.getUncertainty(), 4);
+
+                // --- 2. Упаковываем в формат x-www-form-urlencoded для VK API ---
+                modemPayload = "user_id=" + String(VK_USER_ID) + 
+                               "&random_id=0" + 
+                               "&v=5.199" + 
+                               "&access_token=" + String(VK_TOKEN) + 
+                               "&message=" + msg;
+
                 changeFSMState(SystemState::START_MODEM);
                 sendState_timer = millis();
                 LOG("Starting Modem states...");
@@ -140,34 +162,57 @@ void loop() {
             break;
 
         // ------------------- Особая часть цикла работы, вызывается по таймеру -------------------
-        case SystemState::START_MODEM:
-            // включаем модем
-            // подключаем к сети
-            // проверяем готовность к передаче данных
-
-            changeFSMState(SystemState::DATA_SEND);
+        case SystemState::START_MODEM:  {
+            ModemStatus status = modemManager.processInit();
+            
+            if (status == ModemStatus::BUSY) break; // Крутим loop(), пока модем заводится
+            
+            if (status == ModemStatus::SUCCESS || status == ModemStatus::SUCCESS_WITH_RESTARTS) {
+                LOG("Modem initialized successfully.");
+                changeFSMState(SystemState::DATA_SEND);
+            } else {
+                LOG("Modem initialization failed!");
+                hasModemError = true;
+                restart_reason = static_cast<uint8_t>(status); 
+                changeFSMState(SystemState::SLEEP_MODEM); // Обязательно идем обесточивать!
+            }
             break;
+        }
 
-        case SystemState::DATA_SEND:
-            // читаем входящие данные/отправляем на сервер новые
-            // проверяем наличие ошибок
-
-            Serial1.print(sensorData.weightKg, 2);             // неотфильтрованная масса
-            Serial1.print("/");
-            Serial1.print(sensorData.tempC, 1);                // температура
-            Serial1.print("/");
-            Serial1.print(calibrator.compensate(sensorData.tempC, sensorData.weightGr) / 1000, 2);                        // отфильтрованная масса
-            Serial1.print("/");
-            Serial1.println(calibrator.getUncertainty(), 4);                                                              // "неуверенность"
-
+        case SystemState::DATA_SEND:    {
+            ModemStatus status = modemManager.processRequest(modemPayload, serverResponse);
+            
+            if (status == ModemStatus::BUSY) break; // Крутим loop(), ждем ответа ВК
+            
+            if (status == ModemStatus::SUCCESS) {
+                LOG("Data sent to VK successfully!");
+                // LOG(serverResponse.c_str()); // Раскоментируй, если хочешь видеть ответ VK в консоли
+            } else {
+                LOG("Network/HTTP Error!");
+                hasModemError = true;
+                restart_reason = static_cast<uint8_t>(status);
+            }
+            
+            // В любом случае (успех или провал) - выключаем модем
             changeFSMState(SystemState::SLEEP_MODEM);
             break;
+        }
 
-        case SystemState::SLEEP_MODEM:
-            // отключаемся от сети
-            // переводим модем в режим сна
-            changeFSMState(SystemState::ERROR_HANDLING);
+        case SystemState::SLEEP_MODEM:  {
+            ModemStatus status = modemManager.processPowerOff();
+            
+            if (status == ModemStatus::BUSY) break; // Ждем корректного отключения PPP
+            
+            LOG("Modem powered off.");
+            
+            // Маршрутизация после того, как железо безопасно отключено
+            if (hasModemError) {
+                changeFSMState(SystemState::ERROR_HANDLING);
+            } else {
+                changeFSMState(SystemState::SLEEP_SENSORS);
+            }
             break;
+        }
         // ------------------- Особая часть цикла работы, вызывается по таймеру -------------------
 
 
@@ -179,7 +224,7 @@ void loop() {
             break;
 
         case SystemState::SLEEP_SENSORS:
-            scales.sleepMode(false);
+            scales.sleepMode(true);
             esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         // настраиваемся на здоровый сон на заданное время
             esp_task_wdt_delete(NULL);                                          // чтобы WDT во сне не проголодался, отписываемся от мониторнга текущей Task
             esp_light_sleep_start();                                            // засыпаем, после пробуждения код начнет выполнятся со следующей строчки и сразу сменит состояние на WAKEUP_SENSORS

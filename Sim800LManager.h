@@ -16,8 +16,8 @@ namespace ModemCfg {
     
     // Настройки сети и сервера
     constexpr const char* APN         = "internet";
-    constexpr const char* SERVER_HOST = "api.example.com";
-    constexpr const char* SERVER_PATH = "/data/upload";
+    constexpr const char* SERVER_HOST = "api.vk.com";
+    constexpr const char* SERVER_PATH = "/method/messages.send";
 };
 
 enum class ModemStatus {
