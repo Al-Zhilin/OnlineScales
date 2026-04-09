@@ -46,7 +46,7 @@ void Sim800LManager::clearUART() {
     while (Serial1.available()) Serial1.read();
 }
 
-ModemStatus Sim800LManager::finishJob(ModemStatus status) {
+ModemStatus Sim800LManager::finishJob(ModemStatus status) {                        // синтаксический сахар: прокидывает через себя возвращаемый статус функции, скрывая под капотом деинициализацию _currentJob
     _currentJob = JobType::NONE;
     return status;
 }
