@@ -5,41 +5,52 @@
 #include <NetworkClientSecure.h>
 #include <PPP.h>
 
-// Добавлены статусы IDLE и BUSY для конечного автомата
+// --- Унифицированные настройки (constexpr) ---
+namespace ModemCfg {
+    constexpr uint8_t  MAX_RETRIES        = 3;      // Кол-во попыток аппаратного рестарта
+    constexpr uint32_t AT_TIMEOUT_MS      = 1000;   // Базовый таймаут AT команд
+    constexpr uint32_t SIM_TIMEOUT_MS     = 2000;   // Таймаут ответа SIM-карты
+    constexpr uint32_t NETWORK_TIMEOUT_MS = 60000;  // Ожидание регистрации в сети
+    constexpr uint32_t HTTP_TIMEOUT_MS    = 15000;  // Ожидание ответа от сервера
+    constexpr uint16_t MAX_UART_LEN       = 256;    // Защита от бесконечного мусора из UART
+    constexpr uint16_t MAX_HTTP_LEN       = 4096;   // Защита от переполнения памяти при ответе сервера
+    
+    // Настройки сети и сервера
+    constexpr const char* APN         = "internet";
+    constexpr const char* SERVER_HOST = "api.example.com";
+    constexpr const char* SERVER_PATH = "/data/upload";
+}
+
 enum class ModemStatus {
-    IDLE,                               // простой
-    BUSY,                               // занят выполнением
-    SUCCESS,                            // успешность выполнения
-    SUCCESS_WITH_RESTARTS,              // выполнено успешно, но понадобились перезагрузки
-    ERR_NO_SIM,                         // ошибка с SIM картой
-    ERR_BOOT_TIMEOUT,                   // ошибка boot таймаута
-    ERR_PPP_TIMEOUT,                    // ошибка подъема PPPoS
-    ERR_SERVER_CONNECT,                 // ошибка подключения к серверу
-    ERR_HTTP_TIMEOUT                    // ошибка отправки запроса (таймаут)
+    IDLE,
+    BUSY,
+    SUCCESS,
+    SUCCESS_WITH_RESTARTS,
+    ERR_NO_SIM,
+    ERR_BOOT_TIMEOUT,
+    ERR_PPP_TIMEOUT,
+    ERR_SERVER_CONNECT,
+    ERR_HTTP_TIMEOUT
 };
 
 struct Config {
-    uint8_t pwr_pin;                    // пин управления питанием
-    uint8_t rst_pin;                    // пин, соединенный с RST SIM800L
-    uint8_t tx_pin;                     // TX pin
-    uint8_t rx_pin;                     // RX pin
-    const char* apn;                    // apn оператора
+    uint8_t pwr_pin;
+    uint8_t rst_pin;
+    uint8_t tx_pin;
+    uint8_t rx_pin;
 };
 
 // Внутренние задачи и шаги автомата
 enum class JobType { NONE, INIT, REQUEST, POWER_OFF };
 enum class Step {
-    // Шаги инициализации
     INIT_START, INIT_PWR_DELAY, INIT_RST_LOW, INIT_RST_HIGH,
     INIT_AT_SEND, INIT_AT_WAIT, INIT_AT_DELAY,
     INIT_SIM_DELAY, INIT_SIM_SEND, INIT_SIM_WAIT,
     INIT_CSQ_SEND, INIT_CSQ_WAIT, INIT_CSQ_DELAY,
     
-    // Шаги HTTP запроса
     REQ_PPP_BEGIN, REQ_PPP_ATTACH_WAIT, REQ_PPP_CONN_WAIT,
     REQ_HTTP_CONNECT, REQ_HTTP_WAIT_RES,
     
-    // Шаги выключения
     OFF_START, OFF_DELAY
 };
 
@@ -47,42 +58,37 @@ class Sim800LManager {
 public:
     Sim800LManager(Config cfg);
 
-    // Методы "запуска" процессов (возвращают управление мгновенно)
-    void startInitHardware(uint8_t max_retries);
-    void startRequest(const char* host, const char* path, const String& payload, String* responsePtr, uint32_t network_timeout_ms);
-    void startPowerOff();
-
-    // Главный метод, который нужно вызывать в loop()
-    ModemStatus tick();
+    // Главные методы для вызова в loop()
+    // Возвращают BUSY, пока выполняются. При завершении возвращают SUCCESS или ERR_...
+    ModemStatus processInit();
+    ModemStatus processRequest(const String& payload, String& response);
+    ModemStatus processPowerOff();
 
 private:
     Config _cfg;
     bool _isPppActive;
 
-    // Переменные конечного автомата
     JobType _currentJob = JobType::NONE;
-    Step _currentStep = Step::INIT_START;
+    Step _currentStep;
     unsigned long _timer = 0;
     
-    // Счетчики попыток
-    uint8_t _maxRetries = 0;
     uint8_t _attempts = 0;
     uint8_t _subAttempts = 0;
     bool _hardwareRestarted = false;
 
-    // Данные для HTTP запроса
-    const char* _host;
-    const char* _path;
-    String _payload;
-    String* _responsePtr;
-    uint32_t _networkTimeout;
     NetworkClientSecure _client;
 
-    // Буфер для асинхронного чтения UART и HTTP
+    // Унифицированные переменные для AT команд
     String _uartBuffer;
+    const char* _expectedAtResponse;
+    uint32_t _currentAtTimeout;
 
     ModemStatus finishJob(ModemStatus status);
+    
+    // Унифицированные методы
     void clearUART();
+    void sendAT(const char* cmd, const char* expected, uint32_t timeout);
+    bool waitAT(String& outResponse, bool& isTimeout);
 };
 
 #endif
