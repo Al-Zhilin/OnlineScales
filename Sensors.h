@@ -108,3 +108,15 @@ class TempManager {
       else return TempState::BUSY;
     }
 };
+
+
+float filtrateVolts(float new_meas) {
+  static float filtrated = new_meas;
+  float k;
+
+  if (fabs(new_meas - filtrated) > 120) k = 0.85;
+  else k = 0.45;
+  filtrated += ((new_meas - filtrated) * k);
+  
+  return filtrated;
+}
