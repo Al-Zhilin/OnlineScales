@@ -192,6 +192,8 @@ ModemStatus Sim800LManager::processInit() {
         case Step::INIT_CSQ_DELAY:                                                  // ждем перед очередной попыткой отправки команды
             if (millis() - _timer >= 1000) _currentStep = Step::INIT_CSQ_SEND;
             break;
+
+        default: break;
     }
     return ModemStatus::BUSY;                                                       // возвращаем занятость, пока не выполнили блок операций полностью
 }
@@ -244,10 +246,10 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
 
             String request = String("POST ") + ModemCfg::SERVER_PATH + " HTTP/1.1\r\n" +
                              "Host: " + ModemCfg::SERVER_HOST + "\r\n" +
-                             "Content-Type: application/json\r\n" +
-                             "Content-Length: " + payload.length() + "\r\n" +
-                             "Connection: close\r\n\r\n" + 
-                             payload;
+                            "Content-Type: application/x-www-form-urlencoded\r\n" +
+                            "Content-Length: " + modemPayload.length() + "\r\n" +
+                            "Connection: close\r\n\r\n" + 
+                            modemPayload;
             _client.print(request);
             
             _timer = millis();
@@ -278,6 +280,8 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
                 return finishJob(ModemStatus::ERR_HTTP_TIMEOUT);
             }
             break;
+    
+        default: break;
     }
     return ModemStatus::BUSY;                                                       // возвращаем занятость, пока не дойдем до конца команд
 }
@@ -312,6 +316,8 @@ ModemStatus Sim800LManager::processPowerOff() {
                 return finishJob(ModemStatus::SUCCESS);
             }
             break;
+
+        default: break;
     }
     return ModemStatus::BUSY;                                                       // аналогично реализуем внешний мониторинг статуса
 }
