@@ -20,12 +20,8 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
   #define LOG(x)
 #endif
 
-#define TINY_GSM_MODEM_SIM800
-
-#include <GyverWDT.h>
 #include <EEManager.h>
 #include <uButton.h>
-#include <GyverPower.h>
 #include "Sensors.h"
 #include "Secrets/Secrets.h"
 #include "Led_UI.h"
@@ -33,10 +29,14 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #include "GSM_Handler.h"
 #include "Calibration.h"
 #include "InputHandler.h"
+#include "Sim800LManager.h"
+#include <esp_task_wdt.h>
+#include <esp_sleep.h>
+
+Config ModemConfig;
 
 #define REF_WEIGHT 20000.0f                             // калибровочная масса для алгоритма подбора компенсации температурного дрейфа
 
-#define RST_PIN 9                                       // пин RST на SIM800L
 #define SCL_PIN 8                                       // SCL пин HX711
 #define DT_PIN 7                                        // DT пин HX711
 #define DS_PIN 6                                        // пин DS18b20
@@ -45,19 +45,27 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #define GREEN_PIN 4                                     // зеленый цвет
 #define BLUE_PIN 3                                      // пин кнопки
 #define CALIB_SWITCH_PIN 16                             // пин переключателя режимов работы
+#define WDT_TIMEOUT_MS 10000                            // период для WDT (миллисекунды)
+#define SLEEP_TIME_SEC 30                               // время сна между измерениями (секунлы)
+ModemConfig.pwr_pin = 4;                                // пин управления питанием SIM800L
+ModemConfig.rst_pin = 5;                                // пин, управляющий RST модема
+ModemConfig.tx_pin = 16;                                // пин TX от SIM800L
+ModemConfig.rx_pin = 17;                                // пин RS от SIM800L
 
-constexpr uint32_t DATA_SEND_PERIOD = 5*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
+constexpr uint32_t DATA_SEND_PERIOD = 15*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
 
 SystemState currentState = SystemState::WAKEUP_SENSORS;
-ModificationRequest external_request = ModificationRequest::NONE;
+ModificationRequest external_request = ModificationRequest::FORCE_SEND;              // чтобы при запуске модуль сразу сделал запрос, нужно для проверки соединения и мониторинга
 
 uint32_t stateTimer = 0;
+uint8_t restart_reason = 0;                                // см. использование ниже
 
 AsyncLed led(RED_PIN, GREEN_PIN, BLUE_PIN);
 ScalesManager scales(11.472, DT_PIN, SCL_PIN);
 ScaleAutoCalibrator calibrator(REF_WEIGHT);
 TempManager tempSensor(DS_PIN);
 InputHandler inputHanler(BUTT_PIN, CALIB_SWITCH_PIN, calibrator, external_request, currentState);
+Sim800LManager(ModemConfig);
 
 void changeFSMState(SystemState newState) {                // функция переключения состояния FSM. С помощью PREV_STATE помогает "гостить" в определенном состоянии и возвращаться обратно, нужно в некоторых случаях
     static SystemState previousState = SystemState::WAKEUP_SENSORS;
@@ -80,18 +88,30 @@ void setup() {
     uint16_t next_addr = scales.begin();               // в функции инициализируется обьект EEManager, чтобы 
     calibrator.begin(next_addr);                       // вот тут тоже инициализировался свой объект, по корректному адресу, нам нужно перекинуться инфой об (адресе конца предыдущих данных + 1) = первый адрес для записи новых данных
     stateTimer = millis();
+
+    restart_reason = (uint8_t)esp_reset_reason();      // причина завешения предыдущей работы
+
+    esp_task_wdt_config_t twdt_config = {              // настраиваем конфиг для WDT таймера
+      .timeout_ms = WDT_TIMEOUT_MS,                         // период допустимого "тупления"
+      .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,      // Мониторим все ядра
+      .trigger_panic = true,                                // true = перезагрузка при зависании
+    };
+
+    esp_task_wdt_reconfigure(&twdt_config);            // применяем новые настройки конфига
+    esp_task_wdt_add(NULL);                            // подписываем loopTask() на мониторинг WDT
 }
 
 void loop() {
     led.tick();
     inputHanler.tick();
+    esp_task_wdt_reset();
     static uint32_t sendState_timer = millis();
 
     if (external_request == ModificationRequest::TARE)  changeFSMState(SystemState::TARE_PROCESS);          // по событию вызываем тарирование, оно потом самостоятельно откатит current_state на состояние до вызова
     
     switch (currentState) {
         case SystemState::WAKEUP_SENSORS:
-            //scales.sleepMode(false);
+            scales.sleepMode(false);
 
             changeFSMState(SystemState::MEASURE);
             break;
@@ -159,7 +179,11 @@ void loop() {
             break;
 
         case SystemState::SLEEP_SENSORS:
-            //scales.sleepMode(false);
+            scales.sleepMode(false);
+            esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         // настраиваемся на здоровый сон на заданное время
+            esp_task_wdt_delete(NULL);                                          // чтобы WDT во сне не проголодался, отписываемся от мониторнга текущей Task
+            esp_light_sleep_start();                                            // засыпаем, после пробуждения код начнет выполнятся со следующей строчки и сразу сменит состояние на WAKEUP_SENSORS
+            esp_task_wdt_add(NULL);                                             // вновь подписываемся на мониторинг текущей Task
 
             changeFSMState(SystemState::WAKEUP_SENSORS);               // ставим состояние, которое начнет выполняться после выхода из сна
             break;

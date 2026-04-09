@@ -1,7 +1,6 @@
 #ifndef SIM800L_MANAGER_H
 #define SIM800L_MANAGER_H
 
-#include <Arduino.h>
 #include <NetworkClientSecure.h>
 #include <PPP.h>
 
@@ -19,7 +18,7 @@ namespace ModemCfg {
     constexpr const char* APN         = "internet";
     constexpr const char* SERVER_HOST = "api.example.com";
     constexpr const char* SERVER_PATH = "/data/upload";
-}
+};
 
 enum class ModemStatus {
     IDLE,
