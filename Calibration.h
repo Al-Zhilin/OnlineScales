@@ -8,7 +8,7 @@ struct __attribute__((packed)) ModelEEData {
 } calibData;
 
 extern AsyncLed led;
-EEManager calib_memory(calibData);
+FileData calib_memory(&calibData, sizeof(calibData), "/calib.dat");
 
 template <int N>
 class RLSModel {
@@ -123,8 +123,14 @@ class ScaleAutoCalibrator {
   public:
     ScaleAutoCalibrator(float refMass) : referenceMass(refMass) {}
 
-    void begin(uint16_t addr) {
-      calib_memory.begin(addr, 'Z');
+    void begin() {
+      FDstat stat = calib_memory.read();
+      
+      if (stat != FD_READ) {
+          LOG("No calibration file found. Created default.");
+          calib_memory.write(); 
+      }
+      
       if (calibData.calibrated) loadData();
     }
 
@@ -173,7 +179,8 @@ class ScaleAutoCalibrator {
       calibData.calibrated = false;
       for(int i = 0; i < 4; i++) calibData.params[i] = 0.0f;
 
-      calib_memory.updateNow(); // Желательно сразу зафиксировать сброс в памяти
+      // 2. Меняем updateNow() на write()
+      calib_memory.write(); 
       led.setMode(LedModes::OK);
       LOG("Reset complete!");
     }
@@ -190,7 +197,9 @@ class ScaleAutoCalibrator {
         calibData.params[i] = (params && i < (bestModel + 2)) ? params[i] : 0.0f;
       }
       calibData.calibrated = true;
-      calib_memory.updateNow();
+      
+      // 3. Меняем updateNow() на write()
+      calib_memory.write();
     }
     
     bool loadData() {

@@ -17,46 +17,55 @@ class ScalesManager {
     int32_t _offset = 0;                                  // оффсет для тарирования (при первом запуске - ноль)
     int32_t _filtered = 0;                                // здесь актуальное отфильтрованное значение
     uint32_t _tare_timer = 0;                             // для таймера от частого тарирования (напр., если пользователь удерживает кнопку дольше, чем нужно)
-    EEManager EEOffset;                                   // объект для управления переменной оффсета в EEPROM памяти
+    uint32_t _start_timer = millis();                     // засекаем millis() после пробуждения HX711 - чтения будем вызыват не ранее, чем после 500мс после запуска (длительность инициализации и первого чтения)
+    FileData EEOffset{&_offset, sizeof(_offset), "/offset.dat"};       // объект для управления переменной оффсета в файловой системе
 
   public:
-    ScalesManager(float factor, int16_t dt_pin, int16_t scl_pin) : EEOffset(_offset) {
+    ScalesManager(float factor, int16_t dt_pin, int16_t scl_pin) {
       _calibation_factor = factor;
       _scales = new GyverHX711(dt_pin, scl_pin, HX_GAIN64_A);
     }
 
-    uint16_t begin() {
-      uint8_t mem_stat = EEOffset.begin(0, 'Z');
-      _scales->setOffset(_offset);                        // установили прочитанный из EEPROM оффсет
-      if (!mem_stat)  LOG("Data read from EEPROM");
-      else if (mem_stat == 1) LOG("New Key! Data wrote to EEPROM!");
-      else LOG("ERROR! not enough space in the EEPROM!");
-
-      return EEOffset.nextAddr();
+    void begin() {
+      FDstat stat = EEOffset.read();
+      _scales->setOffset(_offset);                        
+      
+      if (stat == FD_READ) {
+          LOG("Offset read from LittleFS");
+      } else {
+          LOG("New offset file created in LittleFS!");
+          EEOffset.write(); // Сразу создаем файл с дефолтным (нулевым) значением
+      }
     }
 
     ScalesState sensorTare() {
-      if (millis() - _tare_timer < 5000) return ScalesState::ERROR;        // защита от чрезмерного зажатия кнопки - тарировать можно не ранее, чем через 2 секунды
+      if (millis() - _tare_timer < 5000) return ScalesState::ERROR;        
       _tare_timer = millis();
 
       _scales->tare();
 
-      if (abs(_scales->read()) <= STANDART_NOISE) {                   // проверка на обнуление
-        _offset = _scales->getOffset();                   // запоминаем, чтобы после перезагрузки установить удачный оффсет
-        EEOffset.updateNow();                             // записали значение в память
-        LOG("New weight offset saved to EEPROM");
+      if (abs(_scales->read()) <= STANDART_NOISE) {                   
+        _offset = _scales->getOffset();                   
+        
+        EEOffset.write();                             
+        
+        LOG("New weight offset saved to LittleFS");
         return ScalesState::SUCCESS;
       }
-
       else {
         LOG("Uncorrect tare!");
-        _scales->setOffset(_offset);                      // если процедура не удалась - устанавливаем последнее удачное значение
+        _scales->setOffset(_offset);                      
         return ScalesState::ERROR;
       }
     }
 
     void sleepMode(bool mode) {                           // вкл/выкл режим сна
       _scales->sleepMode(mode);
+      if (!mode) _start_timer = millis();                        // засекаем время после пробуждения, чтобы выждать таймаут перед первым чтением
+    }
+
+    bool isReady() {                                      // защита от слишком раннего чтения
+      return (millis() - _start_timer) > 500;
     }
 
     ScalesState tick() {                                  // обновляем фильтр

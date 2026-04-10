@@ -21,6 +21,8 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #endif
 
 #include <EEManager.h>
+#include <SPIFFS.h>
+#include <FileData.h>
 #include <uButton.h>
 #include "Sensors.h"
 #include "Secrets/Secrets.h"
@@ -51,6 +53,8 @@ Config ModemConfig;
 #define R1 100000.0f                                    // Резистор от плюса батареи к пину АЦП
 #define R2 100000.0f                                    // Резистор от пина АЦП к земле
 #define DIVIDER_RATIO ((R1 + R2) / R2)                  // Вычисляем коэффициент делителя
+#define SENSOR_ERROR_THRESHOLD 10*SLEEP_TIME_SEC        // Через сколько минут (кратко длительности периода "которких циклов") нужно перезагружать ESP, если возникла проблема с датчиками
+#define DATA_RETRY_PERIOD 5*60*1000UL                   // Интервал повторного вызова длинного цикла при возниконовении проблем с выполнением сетевых операцих
 
 constexpr uint32_t DATA_SEND_PERIOD = 15*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
 
@@ -62,7 +66,14 @@ uint8_t restart_reason = 0;                                // см. исполь
 String modemPayload = "";                                  // Буфер для сформированного запроса
 String serverResponse = "";                                // Буфер для ответа от VK API
 bool hasModemError = false;                                // Флаг для безопасного отключения при ошибках
-RTC_DATA_ATTR uint8_t rtc_error_mask = 0;                  // Битовая маска накопленных ошибок (выживает при перезагрузке)
+
+// --- ПЕРЕМЕННЫЕ, ВЫЖИВАЮЩИЕ ПРИ ПЕРЕЗАГРУЗКЕ И СНЕ (RTC) ---
+RTC_DATA_ATTR bool is_retry_mode = false;                   // Флаг режима "повтора" после ошибки связи
+RTC_DATA_ATTR uint8_t sensor_error_count = 0;               // Счетчик подряд идущих ошибок датчиков
+RTC_DATA_ATTR uint8_t rtc_error_mask = 0;                  // Битовая маска накопленных ошибок текущего цикла
+RTC_DATA_ATTR uint8_t consecutive_errors = 0;              // Счетчик циклов подряд, в которых были ошибки
+RTC_DATA_ATTR uint8_t reboot_budget = 3;                   // Бюджет перезагрузок (см. соответствующий паттерн поведения)
+
 
 AsyncLed led(RED_PIN, GREEN_PIN, BLUE_PIN);
 ScalesManager scales(11.472, DT_PIN, SCL_PIN);
@@ -95,8 +106,15 @@ void setup() {
 
     led.begin();
     tempSensor.begin();
-    uint16_t next_addr = scales.begin();               // в функции инициализируется обьект EEManager, чтобы 
-    calibrator.begin(next_addr);                       // вот тут тоже инициализировался свой объект, по корректному адресу, нам нужно перекинуться инфой об (адресе конца предыдущих данных + 1) = первый адрес для записи новых данных
+
+    // --- ИНИЦИАЛИЗАЦИЯ ФАЙЛОВОЙ СИСТЕМЫ ESP32 ---
+    // true означает, что при первом запуске (если ФС не найдена) она будет автоматически отформатирована
+    if (!SPIFFS.begin(true)) {
+        LOG("CRITICAL ERROR: SPIFFS Mount Failed!");
+    }
+
+    scales.begin();               
+    calibrator.begin();
 
     restart_reason = (uint8_t)esp_reset_reason();      // причина завешения предыдущей работы
 
@@ -124,17 +142,34 @@ void loop() {
             changeFSMState(SystemState::MEASURE);
             break;
 
-        case SystemState::MEASURE: {                         // читаем датчики
+       case SystemState::MEASURE: {
             scales.tick();
             tempSensor.tick();
 
-            if (sensorData.tempC <= -100.0f || sensorData.tempC == 85.0f) {                                     // Диагностика DS18B20
-                rtc_error_mask |= (1 << 0);                                                     // Устанавливаем 0-й бит (Код 1: Ошибка DS18B20)
+            // --- БЛОК А: Быстрая диагностика датчиков ---
+            bool current_sensor_error = false;
+            if (sensorData.tempC <= -100.0f || sensorData.tempC == 85.0f) {
+                current_sensor_error = true;
+                rtc_error_mask |= (1 << 0);
+            }
+            // Здесь будет проверка HX711 (бит 1)
+
+            if (current_sensor_error) {
+                sensor_error_count++;
+                if (sensor_error_count >= SENSOR_ERROR_THRESHOLD) {
+                    if (reboot_budget > 0) {
+                        LOG("Датчики лежат 10 минут. Аппаратный сброс...");
+                        reboot_budget--;
+                        rtc_error_mask |= (1 << 4); // Бит Hard Reset
+                        delay(500);
+                        ESP.restart();
+                    }
+                }
+            } else {
+                sensor_error_count = 0;
             }
 
-            /*
-             в будущем реализуем проверку и hx711
-            */
+            uint32_t current_period = is_retry_mode ? DATA_RETRY_PERIOD : DATA_SEND_PERIOD;                      // выбор: если ранее были проблемы с модемом - попробуем еще раз запустить его по маленькому таймауту, если все было ок - то по стандартному
 
             batteryVoltage = filtrateVolts(analogReadMilliVolts(BATT_PIN)) / 1000.0f * DIVIDER_RATIO;            // читаем напряжение с батареи, фильтруем простым EMA
 
@@ -145,7 +180,7 @@ void loop() {
                 LOG("Calibration started");
             }
 
-            else if (millis() - sendState_timer >= DATA_SEND_PERIOD || external_request == ModificationRequest::FORCE_SEND) {                          
+            else if (millis() - sendState_timer >= current_period || external_request == ModificationRequest::FORCE_SEND) {               // в данном цикле пришло время/нужно принудительно отправлять данные               
                 if (external_request == ModificationRequest::FORCE_SEND) {
                     external_request = ModificationRequest::NONE;
                 }
@@ -161,8 +196,6 @@ void loop() {
                     if (rtc_error_mask & (1 << 2)) compact_errors += "3"; // Ошибка Init Модема
                     if (rtc_error_mask & (1 << 3)) compact_errors += "4"; // Ошибка Сети/HTTP
                     if (rtc_error_mask & (1 << 4)) compact_errors += "5"; // Был Hard Reset
-                    
-                    rtc_error_mask = 0;
                 }
 
                 // --- 2. Формируем текст сообщения (с URL-кодированием переноса строки %0A) ---        
@@ -190,7 +223,7 @@ void loop() {
 
                 // --- 3. Упаковываем в формат x-www-form-urlencoded для VK API ---
                 modemPayload = "user_id=" + String(VK_USER_ID) + 
-                               "&random_id=" + random(0, 4294967295) +  
+                               "&random_id=" + esp_random() +  
                                "&v=5.199" + 
                                "&access_token=" + String(VK_TOKEN) + 
                                "&message=" + msg;
@@ -199,7 +232,7 @@ void loop() {
                 sendState_timer = millis();
                 LOG("Starting Modem states...");
             }
-            else changeFSMState(SystemState::ERROR_HANDLING);
+            else changeFSMState(SystemState::SLEEP_SENSORS);
 
             break;
         }
@@ -256,23 +289,35 @@ void loop() {
 
 
         case SystemState::ERROR_HANDLING: {
-            led.setMode(LedModes::ERROR); 
-            
-            static uint8_t fatal_counter = 0;
-            
-            if (rtc_error_mask != 0) {
-                fatal_counter++;
-            } else {
-                fatal_counter = 0;
+            if (rtc_error_mask != 0) led.setMode(LedModes::ERROR);
+
+            if (rtc_error_mask == 0) {
+                // ПОЛНЫЙ УСПЕХ
+                is_retry_mode = false;  // Возвращаемся к долгому ожиданию (60 мин)
+                consecutive_errors = 0;
+                reboot_budget = 3;
+                sensor_error_count = 0;
+            } 
+            else {
+                // ЕСТЬ ОШИБКИ
+                consecutive_errors++;
+
+                // Если ошибка связана с МОДЕМОМ (биты 2 или 3)
+                if (rtc_error_mask & (1 << 2) || rtc_error_mask & (1 << 3)) {
+                    is_retry_mode = true; // Включаем режим повтора через 5 минут
+                    LOG("Ошибка связи. Следующая попытка через 5 минут.");
+                }
+
+                // Логика бюджета перезагрузок (раз в 3 полных провала модема)
+                if (consecutive_errors % 3 == 0 && reboot_budget > 0) {
+                    reboot_budget--;
+                    rtc_error_mask |= (1 << 4);
+                    delay(500);
+                    ESP.restart();
+                }
             }
 
-            if (fatal_counter >= 5) {
-                LOG("Слишком много ошибок подряд! Hard Reset.");
-                rtc_error_mask |= (1 << 4);
-                delay(500);
-                ESP.restart();
-            }
-
+            rtc_error_mask = 0; // Очищаем для следующего цикла накопления
             changeFSMState(SystemState::SLEEP_SENSORS);
             break;
         }
