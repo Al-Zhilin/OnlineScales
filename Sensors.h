@@ -15,7 +15,7 @@ class ScalesManager {
     GyverHX711 *_scales;
     float _calibation_factor;                             // коэффициент для перевода значения с датчиков веса в осмысленные граммы
     int32_t _offset = 0;                                  // оффсет для тарирования (при первом запуске - ноль)
-    int32_t _filtered = 0;                                // здесь актуальное отфильтрованное значение
+    float _filtered = 0.0f;                               // здесь актуальное отфильтрованное значение
     uint32_t _tare_timer = 0;                             // для таймера от частого тарирования (напр., если пользователь удерживает кнопку дольше, чем нужно)
     uint32_t _start_timer = millis();                     // засекаем millis() после пробуждения HX711 - чтения будем вызыват не ранее, чем после 500мс после запуска (длительность инициализации и первого чтения)
     FileData EEOffset{&LittleFS, "/offset.dat", 'Z', &_offset, sizeof(_offset)};       // объект для управления переменной оффсета в файловой системе
@@ -79,9 +79,8 @@ class ScalesManager {
 
       if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;         // адаптивный коэффициент
       else k = 0.05;
-      _filtered += (new_weight - _filtered) * k;
-
-      sensorData.weightGr = _filtered / _calibation_factor;        // обновили данные: попугаи -> вес в граммах
+      _filtered += (new_weight - _filtered) * k;  
+      sensorData.weightGr = (int32_t)_filtered / _calibation_factor;  // обновили данные: попугаи -> вес в граммах
       sensorData.weightKg = sensorData.weightGr / 1000;            // еще и вес в кг тоже обновили
 
       Serial.println(sensorData.weightGr);
