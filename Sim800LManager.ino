@@ -17,6 +17,7 @@ void Sim800LManager::sendAT(const char* cmd, const char* expected, uint32_t time
     _expectedAtResponse = expected;
     _currentAtTimeout = timeout;
     _uartBuffer = "";
+    _uartBuffer.reserve(ModemCfg::MAX_HTTP_LEN);
     _timer = millis();
 }
 
@@ -254,6 +255,7 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             
             _timer = millis();
             _uartBuffer = ""; // Используем буфер для сборки ответа HTTP
+            _uartBuffer.reserve(ModemCfg::MAX_HTTP_LEN);
             _currentStep = Step::REQ_HTTP_WAIT_RES;
             break;
         }

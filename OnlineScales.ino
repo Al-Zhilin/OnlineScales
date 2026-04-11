@@ -46,13 +46,13 @@ Config ModemConfig;
 #define GREEN_PIN 4                                     // зеленый цвет
 #define BLUE_PIN 3                                      // пин кнопки
 #define CALIB_SWITCH_PIN 16                             // пин переключателя режимов работы
-#define WDT_TIMEOUT_MS 10000                            // период для WDT (миллисекунды)
+#define WDT_TIMEOUT_MS 25000                            // период для WDT (миллисекунды)
 #define SLEEP_TIME_SEC 30                               // время сна между измерениями (секунды)
 #define BATT_PIN 2                                      // Любой свободный ADC пин (например, GPIO 1, 2, 3...)
 #define R1 100000.0f                                    // Резистор от плюса батареи к пину АЦП
 #define R2 100000.0f                                    // Резистор от пина АЦП к земле
 #define DIVIDER_RATIO ((R1 + R2) / R2)                  // Вычисляем коэффициент делителя
-#define SENSOR_ERROR_THRESHOLD 10*SLEEP_TIME_SEC        // Через сколько минут (кратко длительности периода "которких циклов") нужно перезагружать ESP, если возникла проблема с датчиками
+#define SENSOR_ERROR_THRESHOLD 10                       // Сколько ошибочных циклов работы с датчиками должно произойти, чтобы ESP перезагрузилась
 #define DATA_RETRY_PERIOD 5*60*1000UL                   // Интервал повторного вызова длинного цикла при возниконовении проблем с выполнением сетевых операцих
 
 constexpr uint32_t DATA_SEND_PERIOD = 15*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
@@ -67,8 +67,8 @@ String serverResponse = "";                                // Буфер для 
 bool hasModemError = false;                                // Флаг для безопасного отключения при ошибках
 
 // --- ПЕРЕМЕННЫЕ, ВЫЖИВАЮЩИЕ ПРИ ПЕРЕЗАГРУЗКЕ И СНЕ (RTC) ---
-RTC_DATA_ATTR bool is_retry_mode = false;                   // Флаг режима "повтора" после ошибки связи
-RTC_DATA_ATTR uint8_t sensor_error_count = 0;               // Счетчик подряд идущих ошибок датчиков
+RTC_DATA_ATTR bool is_retry_mode = false;                 // Флаг режима "повтора" после ошибки связи
+RTC_DATA_ATTR uint8_t sensor_error_count = 0;              // Счетчик подряд идущих ошибок датчиков
 RTC_DATA_ATTR uint8_t rtc_error_mask = 0;                  // Битовая маска накопленных ошибок текущего цикла
 RTC_DATA_ATTR uint8_t consecutive_errors = 0;              // Счетчик циклов подряд, в которых были ошибки
 RTC_DATA_ATTR uint8_t reboot_budget = 3;                   // Бюджет перезагрузок (см. соответствующий паттерн поведения)
@@ -142,6 +142,8 @@ void loop() {
             break;
 
        case SystemState::MEASURE: {
+            if (!scales.isReady()) break;
+
             scales.tick();
             tempSensor.tick();
 
@@ -157,7 +159,7 @@ void loop() {
                 sensor_error_count++;
                 if (sensor_error_count >= SENSOR_ERROR_THRESHOLD) {
                     if (reboot_budget > 0) {
-                        LOG("Датчики лежат 10 минут. Аппаратный сброс...");
+                        LOG("Датчики лежат больше допустимого периода. Аппаратный сброс...");
                         reboot_budget--;
                         rtc_error_mask |= (1 << 4); // Бит Hard Reset
                         delay(500);
@@ -222,7 +224,7 @@ void loop() {
 
                 // --- 3. Упаковываем в формат x-www-form-urlencoded для VK API ---
                 modemPayload = "user_id=" + String(VK_USER_ID) + 
-                               "&random_id=" + esp_random() +  
+                               "&random_id=" + String(esp_random()) +  
                                "&v=5.199" + 
                                "&access_token=" + String(VK_TOKEN) + 
                                "&message=" + msg;
