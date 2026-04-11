@@ -52,8 +52,8 @@ public:
         }
     }
 
-    void tick() {
-        if (_currentMode == LedModes::NONE) return;
+    bool tick() {
+        if (_currentMode == LedModes::NONE) return true;             // объект свободен, реализовано для ухода в сон по звершении индикации
 
         uint32_t interval = 1000;
         uint8_t targetBlinks = 0;
@@ -83,5 +83,6 @@ public:
                 }
             }
         }
+        return false;                                           // есть задачи индикации
     }
 };
