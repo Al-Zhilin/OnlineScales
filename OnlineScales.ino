@@ -20,8 +20,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
   #define LOG(x)
 #endif
 
-#include <EEManager.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <FileData.h>
 #include <uButton.h>
 #include "Sensors.h"
@@ -109,7 +108,7 @@ void setup() {
 
     // --- ИНИЦИАЛИЗАЦИЯ ФАЙЛОВОЙ СИСТЕМЫ ESP32 ---
     // true означает, что при первом запуске (если ФС не найдена) она будет автоматически отформатирована
-    if (!SPIFFS.begin(true)) {
+    if (!LittleFS.begin(true)) {
         LOG("CRITICAL ERROR: SPIFFS Mount Failed!");
     }
 

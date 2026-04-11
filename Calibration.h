@@ -8,7 +8,7 @@ struct __attribute__((packed)) ModelEEData {
 } calibData;
 
 extern AsyncLed led;
-FileData calib_memory(&calibData, sizeof(calibData), "/calib.dat");
+FileData calib_memory{&LittleFS, "/calib.dat", 'Z', &calibData, sizeof(calibData)};
 
 template <int N>
 class RLSModel {
@@ -124,11 +124,11 @@ class ScaleAutoCalibrator {
     ScaleAutoCalibrator(float refMass) : referenceMass(refMass) {}
 
     void begin() {
-      FDstat stat = calib_memory.read();
+      FDstat_t stat = calib_memory.read();
       
       if (stat != FD_READ) {
           LOG("No calibration file found. Created default.");
-          calib_memory.write(); 
+          calib_memory.updateNow(); 
       }
       
       if (calibData.calibrated) loadData();
@@ -180,7 +180,7 @@ class ScaleAutoCalibrator {
       for(int i = 0; i < 4; i++) calibData.params[i] = 0.0f;
 
       // 2. Меняем updateNow() на write()
-      calib_memory.write(); 
+      calib_memory.updateNow(); 
       led.setMode(LedModes::OK);
       LOG("Reset complete!");
     }
@@ -199,7 +199,7 @@ class ScaleAutoCalibrator {
       calibData.calibrated = true;
       
       // 3. Меняем updateNow() на write()
-      calib_memory.write();
+      calib_memory.updateNow();
     }
     
     bool loadData() {
