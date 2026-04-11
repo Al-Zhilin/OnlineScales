@@ -1,7 +1,7 @@
 #include <math.h>
 
 // __attribute__((packed)) защищает от непредвиденных отступов (padding) в памяти EEPROM
-struct __attribute__((packed)) ModelEEData {
+struct ModelEEData {
   uint8_t modelType = 0;            // 0 - линейная, 1 - квадратичная, 2 - кубическая
   float params[4] = {0, 0, 0, 0};   // параметры функции наилучшей модели
   bool calibrated = false;          // была ли калибровка?

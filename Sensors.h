@@ -83,7 +83,7 @@ class ScalesManager {
       sensorData.weightGr = (int32_t)_filtered / _calibation_factor;  // обновили данные: попугаи -> вес в граммах
       sensorData.weightKg = sensorData.weightGr / 1000;            // еще и вес в кг тоже обновили
 
-      Serial.println(sensorData.weightGr);
+      //Serial.println(sensorData.weightGr);
       return ScalesState::SUCCESS;
     }
 };

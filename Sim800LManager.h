@@ -55,7 +55,9 @@ enum class Step {
 
 class Sim800LManager {
 public:
-    Sim800LManager(Config cfg);
+    Sim800LManager();
+
+    void begin(Config cfg);
 
     // Главные методы для вызова в loop()
     // Возвращают BUSY, пока выполняются. При завершении возвращают SUCCESS или ERR_...
