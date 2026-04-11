@@ -18,7 +18,7 @@ class ScalesManager {
     int32_t _filtered = 0;                                // здесь актуальное отфильтрованное значение
     uint32_t _tare_timer = 0;                             // для таймера от частого тарирования (напр., если пользователь удерживает кнопку дольше, чем нужно)
     uint32_t _start_timer = millis();                     // засекаем millis() после пробуждения HX711 - чтения будем вызыват не ранее, чем после 500мс после запуска (длительность инициализации и первого чтения)
-    FileData EEOffset{&_offset, sizeof(_offset), "/offset.dat"};       // объект для управления переменной оффсета в файловой системе
+    FileData EEOffset{&LittleFS, "/offset.dat", 'Z', &_offset, sizeof(_offset)};       // объект для управления переменной оффсета в файловой системе
 
   public:
     ScalesManager(float factor, int16_t dt_pin, int16_t scl_pin) {
@@ -27,7 +27,7 @@ class ScalesManager {
     }
 
     void begin() {
-      FDstat stat = EEOffset.read();
+      FDstat_t stat = EEOffset.read();
       _scales->setOffset(_offset);                        
       
       if (stat == FD_READ) {
@@ -47,7 +47,7 @@ class ScalesManager {
       if (abs(_scales->read()) <= STANDART_NOISE) {                   
         _offset = _scales->getOffset();                   
         
-        EEOffset.write();                             
+        EEOffset.updateNow();                             
         
         LOG("New weight offset saved to LittleFS");
         return ScalesState::SUCCESS;
