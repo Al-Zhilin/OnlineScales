@@ -15,7 +15,7 @@ namespace ModemCfg {
     constexpr uint16_t MAX_HTTP_LEN       = 4096;   // Защита от переполнения памяти при ответе сервера
     
     // Настройки сети и сервера
-    constexpr const char* APN         = "internet";
+    constexpr const char* APN         = "internet.mts.ru";
     constexpr const char* SERVER_HOST = "api.vk.com";
     constexpr const char* SERVER_PATH = "/method/messages.send";
 };
@@ -48,7 +48,7 @@ enum class Step {
     INIT_CSQ_SEND, INIT_CSQ_WAIT, INIT_CSQ_DELAY,
     
     REQ_PPP_BEGIN, REQ_PPP_ATTACH_WAIT, REQ_PPP_CONN_WAIT,
-    REQ_HTTP_CONNECT, REQ_HTTP_WAIT_RES,
+    REQ_HTTP_CONNECT, REQ_HTTP_RETRY, REQ_HTTP_WAIT_RES,
     
     OFF_START, OFF_DELAY
 };

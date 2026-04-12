@@ -84,7 +84,7 @@ ModemStatus Sim800LManager::processInit() {
             LOG("Модем: Включение питания и инициализация интерфейсов...");
             
             // Воскрешаем Serial1 на случай, если он был выключен в processPowerOff()
-            Serial1.begin(115200, SERIAL_8N1, _cfg.rx_pin, _cfg.tx_pin); 
+            Serial1.begin(9600, SERIAL_8N1, _cfg.rx_pin, _cfg.tx_pin); 
             
             pinMode(_cfg.rst_pin, INPUT);      
             digitalWrite(_cfg.pwr_pin, HIGH);  
@@ -102,12 +102,23 @@ ModemStatus Sim800LManager::processInit() {
             break;
 
         case Step::INIT_AT_SEND:
-            // "Будим" UART модема (Auto-Bauding). Делаем это ТОЛЬКО ОДИН РАЗ при старте!
+            // "Будим" UART модема
             for (int i = 0; i < 5; i++) {
                 Serial1.println("AT");
                 delay(50); 
             }
-            clearUART(); // Вычищаем мусор старта
+            clearUART(); 
+            
+            // --- НОВЫЙ БЛОК: СТРОГАЯ НАСТРОЙКА ДЛЯ PPP ---
+            // Жестко фиксируем скорость
+            Serial1.println("AT+IPR=9600");
+            delay(100);
+            
+            // ОТКЛЮЧАЕМ ЭХО (ATE0). Без этого драйвер PPP не поймет ответы!
+            Serial1.println("ATE0");
+            delay(100);
+            clearUART();
+            // ----------------------------------------------
             
             sendAT("AT", "OK", ModemCfg::AT_TIMEOUT_MS);
             _currentStep = Step::INIT_AT_WAIT;
@@ -229,17 +240,31 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
     }
 
     switch (_currentStep) {
-        case Step::REQ_PPP_BEGIN:                                                   
-            LOG("HTTP: Поднятие GPRS/PPP интерфейса...");
+        case Step::REQ_PPP_BEGIN: {                                                  
+            LOG("HTTP: Поднятие GPRS/PPP интерфейса (Алгоритм из рабочего скетча)...");
             
-            // ИСПРАВЛЕНИЕ: Освобождаем пины UART, чтобы PPP мог забрать их себе
+            // 1. Закрываем UART с небольшой паузой (как в рабочем скетче)
+            Serial1.flush();
             Serial1.end(); 
+            delay(100);
             
+            // 2. Настраиваем PPP
             PPP.setApn(ModemCfg::APN);
-            PPP.setPins(_cfg.tx_pin, _cfg.rx_pin);
+            PPP.setPins(_cfg.tx_pin, _cfg.rx_pin); 
             
-            // Запускаем PPP. attachTo() удален, он больше не нужен в ESP32 Core 3.x!
-            if (!PPP.begin(PPP_MODEM_SIM800)) {
+            // МАГИЯ №1: Даем драйверу PPP право делать Hard Reset модему!
+            // Если после наших ручных AT-команд модем будет в непонятном состоянии,
+            // драйвер сам сбросит его и инициализирует как надо.
+            PPP.setResetPin(_cfg.rst_pin, true, 200);
+            
+            esp_task_wdt_delete(NULL); 
+            
+            // МАГИЯ №2: Возвращаем драйвер SIM800 (теперь он будет работать)
+            bool ppp_ok = PPP.begin(PPP_MODEM_SIM800);
+            
+            esp_task_wdt_add(NULL); 
+            
+            if (!ppp_ok) {
                 LOG("HTTP: КРИТИЧЕСКАЯ ОШИБКА. Не удалось запустить драйвер PPP!");
                 return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
             }
@@ -248,13 +273,19 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             _timer = millis();
             _currentStep = Step::REQ_PPP_ATTACH_WAIT;
             break;
+        }
 
         case Step::REQ_PPP_ATTACH_WAIT:                                             
             if (PPP.attached()) {
-                LOG("HTTP: GPRS Attached (В сети оператора). Ожидание IP...");
+                LOG("HTTP: GPRS Attached! Переход в CMUX и ожидание IP...");
+                
+                // МАГИЯ №3: Принудительный перевод в CMUX после подключения к сети
+                // (Тот самый хак из твоего рабочего скетча)
+                PPP.mode(ESP_MODEM_MODE_CMUX);
+                
                 _timer = millis();
                 _currentStep = Step::REQ_PPP_CONN_WAIT;
-            } else if (millis() - _timer > ModemCfg::NETWORK_TIMEOUT_MS) {
+            } else if (millis() - _timer > 40000) { // Ожидание как в твоем скетче (40 сек)
                 LOG("HTTP: ОШИБКА. Таймаут GPRS Attach.");
                 return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
             }
@@ -269,17 +300,26 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
                 return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
             }
             break;
-
+                                              
         case Step::REQ_HTTP_CONNECT: {                                              
             LOG("HTTP: Попытка установки SSL-соединения с сервером ВК...");
             _client.setInsecure();
             _client.setTimeout(15); 
             
             if (!_client.connect(ModemCfg::SERVER_HOST, 443)) {
-                LOG("HTTP: ОШИБКА. Не удалось подключиться к серверу ВК (SSL Fail).");
-                return finishJob(ModemStatus::ERR_SERVER_CONNECT);
+                _subAttempts++; // Увеличиваем счетчик попыток
+                if (_subAttempts <= 3) {
+                    LOG("HTTP: Ошибка SSL. Пауза 3 сек...");
+                    _timer = millis();
+                    // Переходим в специальный шаг паузы перед новой попыткой
+                    _currentStep = Step::REQ_HTTP_RETRY;
+                    return ModemStatus::BUSY;
+                } else {
+                    LOG("HTTP: КРИТИЧЕСКАЯ ОШИБКА. Сервер недоступен после 3 попыток.");
+                    return finishJob(ModemStatus::ERR_SERVER_CONNECT);
+                }
             }
-
+            _subAttempts = 0; 
             LOG("HTTP: Соединение установлено! Отправка POST Payload...");
             String request = String("POST ") + ModemCfg::SERVER_PATH + " HTTP/1.1\r\n" +
                              "Host: " + ModemCfg::SERVER_HOST + "\r\n" +
@@ -297,6 +337,12 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             _currentStep = Step::REQ_HTTP_WAIT_RES;
             break;
         }
+
+        case Step::REQ_HTTP_RETRY:
+            if (millis() - _timer >= 3000) { // Ждем 3 секунды
+                _currentStep = Step::REQ_HTTP_CONNECT; // Пробуем снова
+            }
+            break;
 
         case Step::REQ_HTTP_WAIT_RES:                                               
             // 1. Читаем всё, что падает в буфер
