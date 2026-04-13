@@ -26,8 +26,6 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #include "Sensors.h"
 #include "Secrets/Secrets.h"
 #include "Led_UI.h"
-#include "PowerManager.h"
-#include "GSM_Handler.h"
 #include "Calibration.h"
 #include "InputHandler.h"
 #include "Sim800LManager.h"
@@ -211,7 +209,7 @@ void loop() {
             if (calibrator.isCalibratingMode()) calibrator.calibrationStep();
 
             // выбор: если ранее были проблемы с модемом - попробуем еще раз запустить его по маленькому таймауту, если все было ок - то по стандартному
-            if (millis() - sendState_timer >= is_retry_mode ? DATA_RETRY_PERIOD : DATA_SEND_PERIOD || external_request == ModificationRequest::FORCE_SEND) {               // в данном цикле пришло время/нужно принудительно отправлять данные               
+            if (millis() - sendState_timer >= (is_retry_mode ? DATA_RETRY_PERIOD : DATA_SEND_PERIOD) || external_request == ModificationRequest::FORCE_SEND) {               // в данном цикле пришло время/нужно принудительно отправлять данные               
                 if (external_request == ModificationRequest::FORCE_SEND) {
                     external_request = ModificationRequest::NONE;
                 }

@@ -2,24 +2,18 @@
 
 Sim800LManager::Sim800LManager() : _isPppActive(false) {    }
 
-// ==========================================
-// УНИФИЦИРОВАННЫЕ МЕТОДЫ AT-КОМАНД
-// ==========================================
 void Sim800LManager::begin(Config cfg) {
     _cfg = cfg; // Принимаем уже заполненный конфиг из setup()
     
     pinMode(_cfg.pwr_pin, OUTPUT);
     pinMode(_cfg.rst_pin, OUTPUT);
     digitalWrite(_cfg.pwr_pin, LOW);  // по умолчанию модем выкл
-    pinMode(_cfg.rst_pin, INPUT);     // RST "в воздухе", чтобы не держать модем в вечном сбросе
+    pinMode(_cfg.rst_pin, INPUT);     // RST "в воздухе", чтобы не держать модем в вечном сбросе. Боюсь, что 3.3В логики не хватит для отпускания RST, попробую подвешенное состояние
 }
 
 void Sim800LManager::sendAT(const char* cmd, const char* expected, uint32_t timeout) {
     clearUART();
     Serial1.println(cmd);
-
-    Serial.println(); 
-    Serial.println(String(">>> SEND: ") + cmd); 
 
     _expectedAtResponse = expected;
     _currentAtTimeout = timeout;
@@ -39,9 +33,6 @@ bool Sim800LManager::waitAT(String& outResponse, bool& isTimeout) {
         outResponse = _uartBuffer;
         isTimeout = false;
 
-        Serial.print("<<< RECV: ");
-        Serial.println(outResponse);
-
         return true; // Ответ получен
     }
 
@@ -60,14 +51,12 @@ void Sim800LManager::clearUART() {
     while (Serial1.available()) Serial1.read();
 }
 
-ModemStatus Sim800LManager::finishJob(ModemStatus status) {                        
+ModemStatus Sim800LManager::finishJob(ModemStatus status) {                    // синтаксический "сахар": прогоняет через себя возвратное значение + делает рутинную работу, чтобы не писать каждый раз одно и то же       
     _currentJob = JobType::NONE;
     return status;
 }
 
-// ==========================================
-// ЭТАП 1: ИНИЦИАЛИЗАЦИЯ
-// ==========================================
+// -------------------------------------- Инициализация простого Serial соединения, проверка SIM, уровня сигнала --------------------------------------
 ModemStatus Sim800LManager::processInit() {
     if (_currentJob != JobType::INIT) {                                             
         _currentJob = JobType::INIT;
@@ -96,14 +85,14 @@ ModemStatus Sim800LManager::processInit() {
         case Step::INIT_PWR_DELAY:
             // Ждем 3.5 сек загрузки ОС внутри SIM800L
             if (millis() - _timer >= 3500) {
-                LOG("Модем: ОС загружена. Запуск синхронизации UART...");
+                LOG("Модем запустился. Запуск синхронизации UART...");
                 _currentStep = Step::INIT_AT_SEND;
             }
             break;
 
         case Step::INIT_AT_SEND:
             // "Будим" UART модема
-            for (int i = 0; i < 5; i++) {
+            for (int i = 0; i < 5; i++) {                   // спамим чтобы убедить его в принятии нашей скорости передачи
                 Serial1.println("AT");
                 delay(50); 
             }
@@ -230,9 +219,8 @@ ModemStatus Sim800LManager::processInit() {
     return ModemStatus::BUSY;                                                       
 }
 
-// ==========================================
-// ЭТАП 2: ЗАПРОС (PPP + HTTP)
-// ==========================================
+
+// -------------------------------------- Поднимает PPP, подключаемся к серверу и отправляем POST --------------------------------------
 ModemStatus Sim800LManager::processRequest(const String& payload, String& response) {
     if (_currentJob != JobType::REQUEST) {                                          
         _currentJob = JobType::REQUEST;
@@ -243,7 +231,7 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
         case Step::REQ_PPP_BEGIN: {                                                  
             LOG("HTTP: Поднятие GPRS/PPP интерфейса (Алгоритм из рабочего скетча)...");
             
-            // 1. Закрываем UART с небольшой паузой (как в рабочем скетче)
+            // 1. Закрываем UART с небольшой паузой
             Serial1.flush();
             Serial1.end(); 
             delay(100);
@@ -252,20 +240,20 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             PPP.setApn(ModemCfg::APN);
             PPP.setPins(_cfg.tx_pin, _cfg.rx_pin); 
             
-            // МАГИЯ №1: Даем драйверу PPP право делать Hard Reset модему!
+            // Даем драйверу PPP право делать Hard Reset модему!
             // Если после наших ручных AT-команд модем будет в непонятном состоянии,
             // драйвер сам сбросит его и инициализирует как надо.
             PPP.setResetPin(_cfg.rst_pin, true, 200);
             
             esp_task_wdt_delete(NULL); 
             
-            // МАГИЯ №2: Возвращаем драйвер SIM800 (теперь он будет работать)
+            // МАГИЯ №2: Возвращаем драйвер SIM800
             bool ppp_ok = PPP.begin(PPP_MODEM_SIM800);
             
             esp_task_wdt_add(NULL); 
             
             if (!ppp_ok) {
-                LOG("HTTP: КРИТИЧЕСКАЯ ОШИБКА. Не удалось запустить драйвер PPP!");
+                LOG("HTTP: Критическая ошибка. Не удалось запустить драйвер PPP!");
                 return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
             }
             
@@ -279,13 +267,12 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             if (PPP.attached()) {
                 LOG("HTTP: GPRS Attached! Переход в CMUX и ожидание IP...");
                 
-                // МАГИЯ №3: Принудительный перевод в CMUX после подключения к сети
-                // (Тот самый хак из твоего рабочего скетча)
+                // Принудительный перевод в CMUX после подключения к сети
                 PPP.mode(ESP_MODEM_MODE_CMUX);
                 
                 _timer = millis();
                 _currentStep = Step::REQ_PPP_CONN_WAIT;
-            } else if (millis() - _timer > 40000) { // Ожидание как в твоем скетче (40 сек)
+            } else if (millis() - _timer > 40000) {                                 // таймаут attach - 40 сек
                 LOG("HTTP: ОШИБКА. Таймаут GPRS Attach.");
                 return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
             }
@@ -295,7 +282,7 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             if (PPP.connected()) {
                 LOG("HTTP: PPP Соединение активно! IP-адрес получен.");
                 _currentStep = Step::REQ_HTTP_CONNECT;
-            } else if (millis() - _timer > 60000) {
+            } else if (millis() - _timer > 60000) {                                 // таймаут ip - 60 сек
                 LOG("HTTP: ОШИБКА. Таймаут получения IP по PPP.");
                 return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
             }
@@ -307,7 +294,7 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             _client.setTimeout(15); 
             
             if (!_client.connect(ModemCfg::SERVER_HOST, 443)) {
-                _subAttempts++; // Увеличиваем счетчик попыток
+                _subAttempts++;                                                    // Увеличиваем счетчик попыток
                 if (_subAttempts <= 3) {
                     LOG("HTTP: Ошибка SSL. Пауза 3 сек...");
                     _timer = millis();
@@ -326,12 +313,12 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
                              "Content-Type: application/x-www-form-urlencoded\r\n" +
                              "Content-Length: " + payload.length() + "\r\n" +
                              "Connection: close\r\n\r\n" + 
-                             payload; // Обрати внимание, тут используется аргумент payload
+                             payload;
             _client.print(request);
             
             _timer = millis();
             _uartBuffer = ""; 
-            _uartBuffer.reserve(ModemCfg::MAX_HTTP_LEN); // Резервируем много памяти под ответ ВК
+            _uartBuffer.reserve(ModemCfg::MAX_HTTP_LEN);                          // Резервируем много памяти под ответ ВК
             
             LOG("HTTP: Запрос отправлен. Ожидание ответа...");
             _currentStep = Step::REQ_HTTP_WAIT_RES;
@@ -339,8 +326,8 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
         }
 
         case Step::REQ_HTTP_RETRY:
-            if (millis() - _timer >= 3000) { // Ждем 3 секунды
-                _currentStep = Step::REQ_HTTP_CONNECT; // Пробуем снова
+            if (millis() - _timer >= 3000) {                                      // Между попытками сконнектиться с сервером - 3 секунды
+                _currentStep = Step::REQ_HTTP_CONNECT;
             }
             break;
 
@@ -375,10 +362,7 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
     }
     return ModemStatus::BUSY;                                                       
 }
-
-/// ==========================================
-// ЭТАП 3: ВЫКЛЮЧЕНИЕ
-// ==========================================
+// -------------------------------------- Выключаем интерфейсы и отключаем модем от питания --------------------------------------
 ModemStatus Sim800LManager::processPowerOff() {
     if (_currentJob != JobType::POWER_OFF) {                                        
         _currentJob = JobType::POWER_OFF;
@@ -404,8 +388,7 @@ ModemStatus Sim800LManager::processPowerOff() {
             break;
 
         case Step::OFF_DELAY:                                                       
-            // Даем операционной системе 1.5 секунды на переваривание всех асинхронных 
-            // событий (Phase DEAD) от LwIP перед тем, как удалять объект из памяти.
+            // Даем операционной системе 1.5 секунды на переваривание всех асинхронных событий (Phase DEAD) от LwIP перед тем, как удалять объект из памяти
             if (millis() - _timer >= 1500) {
                 PPP.end(); // Теперь уничтожать объект абсолютно безопасно
                 _isPppActive = false;

@@ -77,16 +77,14 @@ private:
     uint8_t _subAttempts = 0;
     bool _hardwareRestarted = false;
 
-    NetworkClientSecure _client;
+    NetworkClientSecure _client;                        // выбираем HTTPS т.к. api.vk тока по нему общается
 
-    // Унифицированные переменные для AT команд
-    String _uartBuffer;
-    const char* _expectedAtResponse;
+    String _uartBuffer;                                 // буфер парсинга ответа модема
+    const char* _expectedAtResponse;                    // ожидаемый ответ (обычно "OK")
     uint32_t _currentAtTimeout;
 
     ModemStatus finishJob(ModemStatus status);
     
-    // Унифицированные методы
     void clearUART();
     void sendAT(const char* cmd, const char* expected, uint32_t timeout);
     bool waitAT(String& outResponse, bool& isTimeout);
