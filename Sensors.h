@@ -65,12 +65,11 @@ class ScalesManager {
     }
 
     bool isReady() {                                      // защита от слишком раннего чтения
-      return (millis() - _start_timer) > 500;
+      return _scales->available();
     }
 
     ScalesState tick() {                                  // обновляем фильтр
-      if (!_scales->available())  {
-        //LOG("Tick failed! Busy!");
+      if (!this->isReady())  {
         return ScalesState::BUSY;
       }
 

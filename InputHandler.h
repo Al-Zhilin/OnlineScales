@@ -11,8 +11,7 @@ class InputHandler {
     SystemState& current_state;
 
   public:
-    InputHandler(uint8_t button, uint8_t sw1_pin, ScaleAutoCalibrator& cal, ModificationRequest& ext, SystemState& curr_state) : switch_pins(sw1_pin), butt_pin(button), calibrator(cal), external_request(ext), 
-                                                                                                                                 current_state(curr_state) {}
+    InputHandler(uint8_t button, uint8_t sw1_pin, ScaleAutoCalibrator& cal, ModificationRequest& ext, SystemState& curr_state) : switch_pins(sw1_pin), butt_pin(button), calibrator(cal), external_request(ext), current_state(curr_state) {}
 
     void begin() {
       pinMode(switch_pins, INPUT_PULLUP);
@@ -37,8 +36,13 @@ class InputHandler {
         LOG("Tare request captured");
       }
 
-      else if (butt->hold(4)) {                 // удержание после 4 кликов - вывести сохраненную модель калибровки в Serial, для отладки и интереса
-          LOG("Requesting saved model data...");
+      else if (butt->hold(1))  {                // принудительный цикл измерений и отправки значений сейчас же
+        LOG("");
+        external_request = ModificationRequest::FORCE_SEND;
+      }
+
+      else if (butt->hold(2)) {                 // вывести сохраненную модель калибровки в Serial, для отладки и интереса
+          LOG("Input Handler: print saved");
           calibrator.printSavedModelData();
       }
       // ---------------------------------------- Универсальные коды ввода ----------------------------------------
@@ -47,18 +51,16 @@ class InputHandler {
 
       /*// ---------------------------------------- Коды ввода в режиме Калибровки ----------------------------------------
       if (current_state == SystemState::CALIBRATION) {
-        else if (butt->hold(3)) {                // удержание после 3 кликов - сбросить данные о предыдущей калибровке
-          calibrator.resetCalibration();
-        }
+        // здесь коды ввода только для режима калибровки
       }
       // ---------------------------------------- Коды ввода в режиме Калибровки ----------------------------------------*/
 
 
 
       // ---------------------------------------- Коды ввода в остальных режимах ----------------------------------------
-      else {
-        if (butt->hold(1))  external_request = ModificationRequest::FORCE_SEND;      // принудительный цикл измерений и отправки значений сейчас же
-      }
+      /*else {
+        // здесь коды ввода во всех режимах, кроме калибровки
+      }*/
       // ---------------------------------------- Коды ввода в остальных режимах ----------------------------------------
 
     }

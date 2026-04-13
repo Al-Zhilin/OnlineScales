@@ -154,15 +154,14 @@ class ScaleAutoCalibrator {
       }
       
       isCalibrating = false;
-      if (samplesCount > 10) { // Защита от сохранения после 1-2 случайных тиков
+      if (samplesCount > 10) {          // если модель калибровалась хотя бы 10 тиков (защита от случайного начала процесса)
         calcBestModel();
         saveData();
       }
       led.setMode(LedModes::OK);
     }
 
-    // Отдельный метод для сброса только математики (без EEPROM)
-    void resetCalibrationModels() {
+    void resetCalibrationModels() {     // Отдельный метод для сброса только математики (без EEPROM)
       linearModel.reset();
       quadraticModel.reset();
       cubicModel.reset();
