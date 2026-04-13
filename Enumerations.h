@@ -1,7 +1,6 @@
 #pragma once
 
 enum class SystemState : uint8_t {                   // состояния конечного автомата (главного цикла loop())
-    CALIBRATION,                            // в процессе калибровки
     SLEEP_SENSORS,                          // усыпляем temp и weight датчики
     SLEEP_MODEM,                            // заканчиваем работу и усыпляем SIM800L
     WAKEUP_SENSORS,                         // пробуждаем датчики

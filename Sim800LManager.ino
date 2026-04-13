@@ -376,7 +376,7 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
     return ModemStatus::BUSY;                                                       
 }
 
-// ==========================================
+/// ==========================================
 // ЭТАП 3: ВЫКЛЮЧЕНИЕ
 // ==========================================
 ModemStatus Sim800LManager::processPowerOff() {
@@ -389,20 +389,27 @@ ModemStatus Sim800LManager::processPowerOff() {
         case Step::OFF_START:                                                       
             LOG("Модем: Инициировано штатное выключение...");
             if (_isPppActive) {
-                PPP.end();
-                _isPppActive = false;
+                // АНТИ-ПАНИКА: Мягкое закрытие сессии перед уничтожением объекта
+                // Заставляем LwIP безопасно закрыть PPP-сессию, пока объект еще жив.
+                PPP.mode(ESP_MODEM_MODE_COMMAND);
+                
                 _timer = millis();
                 _currentStep = Step::OFF_DELAY;
             } else {
-                Serial1.end(); // Убиваем Serial для экономии питания
-                digitalWrite(_cfg.pwr_pin, LOW); // Закрываем транзистор
+                Serial1.end(); 
+                digitalWrite(_cfg.pwr_pin, LOW); 
                 LOG("Модем: Полностью обесточен.");
                 return finishJob(ModemStatus::SUCCESS);
             }
             break;
 
         case Step::OFF_DELAY:                                                       
-            if (millis() - _timer >= 1000) {
+            // Даем операционной системе 1.5 секунды на переваривание всех асинхронных 
+            // событий (Phase DEAD) от LwIP перед тем, как удалять объект из памяти.
+            if (millis() - _timer >= 1500) {
+                PPP.end(); // Теперь уничтожать объект абсолютно безопасно
+                _isPppActive = false;
+                
                 Serial1.end();
                 digitalWrite(_cfg.pwr_pin, LOW);
                 LOG("Модем: Полностью обесточен.");
