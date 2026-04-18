@@ -179,7 +179,6 @@ void loop() {
                 calibrator.startCalibration();
                 LOG("Calibration started");
                 
-                // Уведомляем пользователя в ВК о старте калибровки
                 String msg = "Переключатель переведен в режим калибровки";
                 modemPayload = "user_id=" + String(VK_USER_ID) + "&random_id=" + String(esp_random()) + "&v=5.199&access_token=" + String(VK_TOKEN) + "&message=" + msg;
                 
@@ -199,11 +198,11 @@ void loop() {
                     msg += "Недостаточно данных, модель не сохранена";
                 }
 
-                modemPayload = "user_id=" + String(VK_USER_ID) + "&random_id=" + String(esp_random()) + "&v=5.199&access_token=" + String(VK_TOKEN) + "&message=" + msg;
+                modemPayload = "user_id=" + String(VK_USER_ID) + "&random_id=" + String(esp_random() & 0x7FFFFFFF) + "&v=5.199&access_token=" + String(VK_TOKEN) + "&message=" + msg;
                 
-                postModemState = SystemState::SLEEP_SENSORS; // После отчета уходим спать!
+                postModemState = SystemState::SLEEP_SENSORS;
                 changeFSMState(SystemState::START_MODEM);
-                break; // Прерываем MEASURE, чтобы модем запустился
+                break;
             }
 
             if (calibrator.isCalibratingMode()) calibrator.calibrationStep();
@@ -311,7 +310,7 @@ void loop() {
                 changeFSMState(postModemState); 
             }
             
-            postModemState = SystemState::SLEEP_SENSORS; // Безопасный дефолт для следующего цикла
+            postModemState = SystemState::SLEEP_SENSORS;
             break;
         }
         // ------------------- Особая часть цикла работы, вызывается по таймеру -------------------
