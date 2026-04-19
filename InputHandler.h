@@ -25,8 +25,20 @@ class InputHandler {
 
       if (switch_val != switch_state && millis() - switch_timer >= 500) {                   // дернули переключатель режима работы
         switch_state = switch_val;
+        
         if (switch_val) external_request.start_calibration = true;        // пользователь включил режим калибровки
         else external_request.end_calibration = true;                     // пользователь выключил режим калбировки
+      }
+
+      if (Serial.available() > 0) {
+        String input = Serial.readString();           // Читаем строку
+        input.trim();                                 // Убираем пробелы и переводы строк
+        
+        int number = input.toInt();                   // Преобразуем в число
+        
+        Serial.println("Parsed number: " + String(number));
+        if (number == 1) external_request.start_calibration = true;
+        else if (number == 0) external_request.end_calibration = true;
       }
 
 
