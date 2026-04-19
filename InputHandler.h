@@ -7,11 +7,11 @@ class InputHandler {
     bool switch_state = false;                        // храним предыдущее состояние переключателей
     uint32_t switch_timer = millis();                 // таймер для игнорирования возможного дребезга
     ScaleAutoCalibrator& calibrator;
-    ModificationRequest& external_request;
+    ModificationRequests& external_request;
     SystemState& current_state;
 
   public:
-    InputHandler(uint8_t button, uint8_t sw1_pin, ScaleAutoCalibrator& cal, ModificationRequest& ext, SystemState& curr_state) : switch_pins(sw1_pin), butt_pin(button), calibrator(cal), external_request(ext), current_state(curr_state) {}
+    InputHandler(uint8_t button, uint8_t sw1_pin, ScaleAutoCalibrator& cal, ModificationRequests& ext, SystemState& curr_state) : switch_pins(sw1_pin), butt_pin(button), calibrator(cal), external_request(ext), current_state(curr_state) {}
 
     void begin() {
       pinMode(switch_pins, INPUT_PULLUP);
@@ -25,20 +25,20 @@ class InputHandler {
 
       if (switch_val != switch_state && millis() - switch_timer >= 500) {                   // дернули переключатель режима работы
         switch_state = switch_val;
-        if (switch_val) external_request = ModificationRequest::START_CALIBRATION;        // пользователь включил режим калибровки
-        else external_request = ModificationRequest::END_CALIBRATION;      // пользователь выключил режим калбировки
+        if (switch_val) external_request.start_calibration = true;        // пользователь включил режим калибровки
+        else external_request.end_calibration = true;                     // пользователь выключил режим калбировки
       }
 
 
       // ---------------------------------------- Универсальные коды ввода ----------------------------------------
       if (butt->hold(0))    {                   // кнопка удержана без предшествующих нажатий - поднимаем флаг тарирования
-        external_request = ModificationRequest::TARE;
+        external_request.tare = true;
         LOG("Tare request captured");
       }
 
       else if (butt->hold(1))  {                // принудительный цикл измерений и отправки значений сейчас же
         LOG("");
-        external_request = ModificationRequest::FORCE_SEND;
+        external_request.force_send = true;;
       }
 
       else if (butt->hold(2)) {                 // вывести сохраненную модель калибровки в Serial, для отладки и интереса
