@@ -144,23 +144,25 @@ void loop() {
             changeFSMState(SystemState::MEASURE);
             break;
 
-        case SystemState::MEASURE: {                       // измерения температуры и веса
-            if (!scales.isReady()) break;                  // после пробуждения hx711 еще примерно 400мс настраивается и делает первое измерение - проверяем готовность перед чтением, иначе - мусор/старые значения!
+        case SystemState::MEASURE: {                       // измерения температуры и веса                  
+            ScalesState s_state = scales.tick();           // после пробуждения hx711 еще примерно 400мс настраивается и делает первое измерение - проверяем готовность перед чтением, иначе - мусор/старые значения! (Но обязательно с защитой от зависания!!)
+            TempState t_state = tempSensor.tick();         // обновляем и температуру
 
-            scales.tick();                                 // обновляем значение веса
-            tempSensor.tick();                             // и температуры в глобальной структуре
+            if (s_state == ScalesState::BUSY || t_state == TempState::BUSY) break;
 
             // Быстрая диагностика датчиков на возможные неисправности:
             bool current_sensor_error = false;
             // 1. Temp Sensor
-            if (sensorData.tempC <= -100.0f || sensorData.tempC == 85.0f) {
+            if (t_state == TempState::ERROR) {
                 current_sensor_error = true;
-                rtc_error_mask |= (1 << 0);
+                rtc_error_mask |= (1 << 0);                // Ошибка DS18b20 - бит 0 в маске
             }
 
             // 2. Scales Sensor
-            // ... она тут обязательно будет)
-
+            if (s_state == ScalesState::ERROR) {
+                current_sensor_error = true;
+                rtc_error_mask |= (1 << 1);                // Записываем ошибку HX711 в бит 1
+            }
             
             if (current_sensor_error) {                                             
                 sensor_error_count++;
@@ -180,7 +182,14 @@ void loop() {
                 LOG("Calibration started");
                 
                 String msg = "Переключатель переведен в режим калибровки";
-                modemPayload = "user_id=" + String(VK_USER_ID) + "&random_id=" + String(esp_random()) + "&v=5.199&access_token=" + String(VK_TOKEN) + "&message=" + msg;
+                modemPayload = "peer_id=";
+                modemPayload += VK_PEER_ID; // Макросы подставятся без создания объекта String
+                modemPayload += "&random_id=";
+                modemPayload += String(esp_random() & 0x7FFFFFFF);
+                modemPayload += "&v=5.199&access_token=";
+                modemPayload += VK_TOKEN;
+                modemPayload += "&message=";
+                modemPayload += msg;
                 
                 postModemState = SystemState::SLEEP_SENSORS;                                                     // После отправки в ВК модем вернет нас в сон!
                 changeFSMState(SystemState::START_MODEM);
@@ -198,7 +207,14 @@ void loop() {
                     msg += "Недостаточно данных, модель не сохранена";
                 }
 
-                modemPayload = "user_id=" + String(VK_USER_ID) + "&random_id=" + String(esp_random() & 0x7FFFFFFF) + "&v=5.199&access_token=" + String(VK_TOKEN) + "&message=" + msg;
+                modemPayload = "peer_id=";
+                modemPayload += VK_PEER_ID; // Макросы подставятся без создания объекта String
+                modemPayload += "&random_id=";
+                modemPayload += String(esp_random() & 0x7FFFFFFF);
+                modemPayload += "&v=5.199&access_token=";
+                modemPayload += VK_TOKEN;
+                modemPayload += "&message=";
+                modemPayload += msg;
                 
                 postModemState = SystemState::SLEEP_SENSORS;
                 changeFSMState(SystemState::START_MODEM);
@@ -249,11 +265,14 @@ void loop() {
                 }
 
                 // Упаковываем в формат x-www-form-urlencoded для VK API ---
-                modemPayload = "user_id=" + String(VK_USER_ID) + 
-                               "&random_id=" + String(esp_random()) +  
-                               "&v=5.199" + 
-                               "&access_token=" + String(VK_TOKEN) + 
-                               "&message=" + msg;
+                modemPayload = "peer_id=";
+                modemPayload += VK_PEER_ID; // Макросы подставятся без создания объекта String
+                modemPayload += "&random_id=";
+                modemPayload += String(esp_random() & 0x7FFFFFFF);
+                modemPayload += "&v=5.199&access_token=";
+                modemPayload += VK_TOKEN;
+                modemPayload += "&message=";
+                modemPayload += msg;
 
                 postModemState = SystemState::ERROR_HANDLING;        // Стандартный цикл после отпарвки данных модемом всегда ведет к обработке возможных ошибок
                 sendState_timer = millis();

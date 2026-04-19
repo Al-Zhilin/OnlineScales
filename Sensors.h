@@ -61,7 +61,7 @@ class ScalesManager {
 
     void sleepMode(bool mode) {                           // вкл/выкл режим сна
       _scales->sleepMode(mode);
-      if (!mode) _start_timer = millis();                        // засекаем время после пробуждения, чтобы выждать таймаут перед первым чтением
+      if (!mode) _start_timer = millis();                 // засекаем время после пробуждения, чтобы выждать таймаут перед первым чтением
     }
 
     bool isReady() {                                      // защита от слишком раннего чтения
@@ -70,8 +70,13 @@ class ScalesManager {
 
     ScalesState tick() {                                  // обновляем фильтр
       if (!this->isReady())  {
+        if (millis() - _start_timer > 2000) {             // Добавляем защиту от аппаратного зависания HX711
+            return ScalesState::ERROR;                    // Датчик не ответил за 2 секунды! - признак зависания, а не просто "ожидания готовности измерения"
+        }
         return ScalesState::BUSY;
       }
+      
+      _start_timer = millis(); // Сбрасываем таймер при успешном чтении
 
       float k;
       int32_t new_weight = _scales->read();
@@ -90,6 +95,7 @@ class ScalesManager {
 class TempManager {
   private:
     GyverDS18Single *_temp_sensor;                        // хранимое отфильтрованное значение
+    uint32_t _start_timer;                                // таймер между между успешными измерениями. Если датчик не готов дольше этого времени - он работает некорректно!!
 
   public:
     TempManager(uint8_t pin) {
@@ -110,9 +116,11 @@ class TempManager {
         else if (fabsf(new_temp - sensorData.tempC) > 0.5) k = 0.75;
 
         sensorData.tempC += (new_temp - sensorData.tempC) * k;
+        _start_timer = millis();
         return TempState::SUCCESS;
       }
-      else return TempState::BUSY;
+      else if (millis() - _start_timer < 2000) return TempState::BUSY;          // как будто проверка лишняя, ибо метод проверки готовности датчика под капотом DS18b20 - простой таймер, а не проверка сигнала датчика!
+      else return TempState::ERROR;
     }
 };
 
