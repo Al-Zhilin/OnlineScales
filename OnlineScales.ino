@@ -58,7 +58,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 constexpr uint32_t DATA_SEND_PERIOD = 15*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
 
 SystemState currentState = SystemState::WAKEUP_SENSORS;                              // текущее состояние FSM
-ModificationRequest external_request = ModificationRequest::FORCE_SEND;              // внешние вмешательства в FSM. FORCE_SEND нужно, чтобы первый же цикл прошел с запросом
+ModificationRequests external_request;                  // внешние вмешательства в FSM
 
 float batteryVoltage = 0.0f;                               // Текущее напряжение батареи
 uint8_t restart_reason = 0;                                // см. использование ниже
@@ -136,7 +136,7 @@ void loop() {
     esp_task_wdt_reset();
     static uint32_t sendState_timer = millis();
 
-    if (external_request == ModificationRequest::TARE)  changeFSMState(SystemState::TARE_PROCESS);          // по событию вызываем тарирование, оно потом самостоятельно откатит current_state на состояние до вызова
+    if (external_request.tare)  changeFSMState(SystemState::TARE_PROCESS);          // по событию вызываем тарирование, оно потом самостоятельно откатит current_state на состояние до вызова
     
     switch (currentState) {
         case SystemState::WAKEUP_SENSORS:                  // пробуждаем hx711, переходим к измерениям
@@ -176,13 +176,13 @@ void loop() {
 
             batteryVoltage = filtrateVolts(analogReadMilliVolts(BATT_PIN)) / 1000.0f * DIVIDER_RATIO;            // читаем напряжение с батареи, фильтруем простым EMA с адаптивным коэффициентом
 
-            if (external_request == ModificationRequest::START_CALIBRATION) {                                    // пользователь переключил на режим калибровки
-                external_request = ModificationRequest::NONE;
+            if (external_request.start_calibration) {                                    // пользователь переключил на режим калибровки
+                external_request.start_calibration = false;
                 calibrator.startCalibration();
                 LOG("Calibration started");
                 
                 String msg = "Переключатель переведен в режим калибровки";
-                modemPayload = "peer_id=";
+                modemPayload = "peer_ids=";
                 modemPayload += VK_PEER_ID; // Макросы подставятся без создания объекта String
                 modemPayload += "&random_id=";
                 modemPayload += String(esp_random() & 0x7FFFFFFF);
@@ -194,8 +194,8 @@ void loop() {
                 postModemState = SystemState::SLEEP_SENSORS;                                                     // После отправки в ВК модем вернет нас в сон!
                 changeFSMState(SystemState::START_MODEM);
             }
-            else if (external_request == ModificationRequest::END_CALIBRATION) {
-                external_request = ModificationRequest::NONE;
+            else if (external_request.end_calibration) {
+                external_request.end_calibration = false;
                 calibrator.finishCalibration();
                 LOG("Калибровка завершена!");
                 
@@ -207,7 +207,7 @@ void loop() {
                     msg += "Недостаточно данных, модель не сохранена";
                 }
 
-                modemPayload = "peer_id=";
+                modemPayload = "peer_ids=";
                 modemPayload += VK_PEER_ID; // Макросы подставятся без создания объекта String
                 modemPayload += "&random_id=";
                 modemPayload += String(esp_random() & 0x7FFFFFFF);
@@ -224,9 +224,9 @@ void loop() {
             if (calibrator.isCalibratingMode()) calibrator.calibrationStep();
 
             // выбор: если ранее были проблемы с модемом - попробуем еще раз запустить его по маленькому таймауту, если все было ок - то по стандартному
-            if (millis() - sendState_timer >= (is_retry_mode ? DATA_RETRY_PERIOD : DATA_SEND_PERIOD) || external_request == ModificationRequest::FORCE_SEND) {               // в данном цикле пришло время/нужно принудительно отправлять данные               
-                if (external_request == ModificationRequest::FORCE_SEND) {
-                    external_request = ModificationRequest::NONE;
+            if (millis() - sendState_timer >= (is_retry_mode ? DATA_RETRY_PERIOD : DATA_SEND_PERIOD) || external_request.force_send) {               // в данном цикле пришло время/нужно принудительно отправлять данные               
+                if (external_request.force_send) {
+                    external_request.force_send = false;
                 }
 
                 hasModemError = false;
@@ -261,11 +261,11 @@ void loop() {
 
                 // Вставляем ошибки ТОЛЬКО если они были
                 if (compact_errors.length() > 0) {
-                     msg += "%0A Errors: " + compact_errors;            // пользователь увидет только коды ошибок = циферки, которые легко расшифровываются
+                     msg += "%0AErrors: " + compact_errors;            // пользователь увидет только коды ошибок = циферки, которые легко расшифровываются
                 }
 
                 // Упаковываем в формат x-www-form-urlencoded для VK API ---
-                modemPayload = "peer_id=";
+                modemPayload = "peer_ids=";
                 modemPayload += VK_PEER_ID; // Макросы подставятся без создания объекта String
                 modemPayload += "&random_id=";
                 modemPayload += String(esp_random() & 0x7FFFFFFF);
@@ -404,7 +404,7 @@ void loop() {
 
         case SystemState::TARE_PROCESS:
         {   
-            external_request = ModificationRequest::NONE;
+            external_request.tare = false;
             ScalesState tare_state = scales.sensorTare();
             if (tare_state == ScalesState::SUCCESS)    led.setMode(LedModes::OK);
             else if (tare_state == ScalesState::ERROR)   led.setMode(LedModes::ERROR);
