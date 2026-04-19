@@ -25,6 +25,7 @@ class InputHandler {
 
       if (switch_val != switch_state && millis() - switch_timer >= 500) {                   // дернули переключатель режима работы
         switch_state = switch_val;
+        _switch_timer = millis();
         
         if (switch_val) external_request.start_calibration = true;        // пользователь включил режим калибровки
         else external_request.end_calibration = true;                     // пользователь выключил режим калбировки
