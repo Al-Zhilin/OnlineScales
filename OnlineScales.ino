@@ -193,6 +193,7 @@ void loop() {
                 
                 postModemState = SystemState::SLEEP_SENSORS;                                                     // После отправки в ВК модем вернет нас в сон!
                 changeFSMState(SystemState::START_MODEM);
+                break;
             }
             else if (external_request.end_calibration) {
                 external_request.end_calibration = false;
@@ -392,11 +393,12 @@ void loop() {
 
             scales.sleepMode(true);
             esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         // настраиваемся на здоровый сон на заданное время
-            esp_sleep_enable_ext0_wakeup((gpio_num_t)BUTT_PIN, 0);              // пробуждение от нажатия кнопки
+            gpio_wakeup_enable((gpio_num_t)BUTT_PIN, GPIO_INTR_LOW_LEVEL);
+            gpio_wakeup_enable((gpio_num_t)CALIB_SWITCH_PIN, GPIO_INTR_LOW_LEVEL);
+            esp_sleep_enable_gpio_wakeup();
             esp_task_wdt_delete(NULL);                                          // чтобы WDT во сне не проголодался, отписываемся от мониторнга текущей Task
             esp_light_sleep_start();                                            // засыпаем, после пробуждения код начнет выполнятся со следующей строчки и сразу сменит состояние на WAKEUP_SENSORS
             esp_task_wdt_add(NULL);                                             // вновь подписываемся на мониторинг текущей Task
-
             changeFSMState(SystemState::WAKEUP_SENSORS);               // ставим состояние, которое начнет выполняться после выхода из сна
             break;
 
