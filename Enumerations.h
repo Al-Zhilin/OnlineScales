@@ -35,6 +35,7 @@ enum class ScalesState : uint8_t {                   // состояния ве�
 
 enum class TempState : uint8_t {
     SUCCESS,
+    ERROR,
     BUSY
 };
 
