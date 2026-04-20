@@ -5,7 +5,7 @@ class InputHandler {
     uButton *butt = nullptr;
     uint8_t switch_pins, butt_pin;
     bool switch_state = false;                        // храним предыдущее состояние переключателей
-    uint32_t switch_timer = millis();                 // таймер для игнорирования возможного дребезга
+    uint32_t _switch_timer = millis();                 // таймер для игнорирования возможного дребезга
     ScaleAutoCalibrator& calibrator;
     ModificationRequests& external_request;
     SystemState& current_state;
@@ -23,7 +23,7 @@ class InputHandler {
       butt->tick();
       bool switch_val = !digitalRead(switch_pins);     // ручное чтение состояний переключателя. true - вкл режим калибровки
 
-      if (switch_val != switch_state && millis() - switch_timer >= 500) {                   // дернули переключатель режима работы
+      if (switch_val != switch_state && millis() - _switch_timer >= 500) {                   // дернули переключатель режима работы
         switch_state = switch_val;
         _switch_timer = millis();
         

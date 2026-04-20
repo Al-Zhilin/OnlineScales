@@ -79,15 +79,20 @@ class ScalesManager {
       _start_timer = millis(); // Сбрасываем таймер при успешном чтении
 
       float k;
-      int32_t new_weight = _scales->read();
+      int32_t new_weight = 1;     //_scales->read()
 
       if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;         // адаптивный коэффициент
       else k = 0.05;
       _filtered += (new_weight - _filtered) * k;  
-      sensorData.weightGr = (int32_t)_filtered / _calibation_factor;  // обновили данные: попугаи -> вес в граммах
-      sensorData.weightKg = sensorData.weightGr / 1000;            // еще и вес в кг тоже обновили
+      sensorData.weightGr = (float)_filtered / _calibation_factor;  // обновили данные: попугаи -> вес в граммах
+      sensorData.weightKg = sensorData.weightGr / 1000;             // еще и вес в кг тоже обновили
 
-      //Serial.println(sensorData.weightGr);
+      this->sleepMode(false);
+      Serial.print("HX711: ");
+      Serial.print(this->isReady());
+      Serial.print("/");
+      Serial.println((_scales->read() != 0) ? "Есть" : "Нет");
+      delay(100);
       return ScalesState::SUCCESS;
     }
 };
@@ -95,7 +100,7 @@ class ScalesManager {
 class TempManager {
   private:
     GyverDS18Single *_temp_sensor;                        // хранимое отфильтрованное значение
-    uint32_t _start_timer;                                // таймер между между успешными измерениями. Если датчик не готов дольше этого времени - он работает некорректно!!
+    uint32_t _start_timer;                                 // таймер между между успешными измерениями. Если датчик не готов дольше этого времени - он работает некорректно!!
 
   public:
     TempManager(uint8_t pin) {
