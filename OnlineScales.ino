@@ -47,7 +47,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #define MODEM_TX_PIN 17                                 // пин, подключенный к TX модема
 #define MODEM_RX_PIN 16                                 // пин, подключенный к RX модема
 #define WDT_TIMEOUT_MS 25000                            // период для WDT (миллисекунды)
-#define SLEEP_TIME_SEC 30                               // время сна между измерениями (секунды)
+#define SLEEP_TIME_SEC 1                                // время сна между измерениями (секунды)
 #define BATT_PIN 9                                      // пин чтения напряжения батареи
 #define R1 100000.0f                                    // Резистор от плюса батареи к пину АЦП
 #define R2 100000.0f                                    // Резистор от пина АЦП к земле
@@ -135,20 +135,30 @@ void loop() {
     inputHanler.tick();                                // аналогично и с input
     esp_task_wdt_reset();
     static uint32_t sendState_timer = millis();
+    static ScalesState s_state;
+    static TempState t_state;
 
     if (external_request.tare)  changeFSMState(SystemState::TARE_PROCESS);          // по событию вызываем тарирование, оно потом самостоятельно откатит current_state на состояние до вызова
     
     switch (currentState) {
         case SystemState::WAKEUP_SENSORS:                  // пробуждаем hx711, переходим к измерениям
-            scales.sleepMode(false);
+            //scales.sleepMode(false);
             changeFSMState(SystemState::MEASURE);
+            s_state = ScalesState::BUSY;
+            t_state = TempState::BUSY;
             break;
 
         case SystemState::MEASURE: {                       // измерения температуры и веса                  
-            ScalesState s_state = scales.tick();           // после пробуждения hx711 еще примерно 400мс настраивается и делает первое измерение - проверяем готовность перед чтением, иначе - мусор/старые значения! (Но обязательно с защитой от зависания!!)
-            TempState t_state = tempSensor.tick();         // обновляем и температуру
+            // = scales.tick();           // после пробуждения hx711 еще примерно 400мс настраивается и делает первое измерение - проверяем готовность перед чтением, иначе - мусор/старые значения! (Но обязательно с защитой от зависания!!)
+            // = tempSensor.tick();         // обновляем и температуру
 
-            if (s_state == ScalesState::BUSY || t_state == TempState::BUSY) break;
+            if (s_state == ScalesState::BUSY) s_state = scales.tick();
+            if (t_state == TempState::BUSY) t_state = tempSensor.tick();
+
+            if (s_state == ScalesState::BUSY || t_state == TempState::BUSY) {
+              //Serial.println(String((s_state == ScalesState::BUSY) ? "Ждем весы..." : "Ждем термометр..."));
+              break;
+            }
 
             // Быстрая диагностика датчиков на возможные неисправности:
             bool current_sensor_error = false;
@@ -248,7 +258,7 @@ void loop() {
                 msg += "Отчет от весов:%0A";
 
                 msg += "Текущий вес: ";
-                msg += (calibrator.isCalibratingMode()) ? String(sensorData.weightKg, 2) : String(calibrator.compensate(sensorData.tempC, sensorData.weightGr) / 1000.0f, 2);
+                msg += (!calibrator.isCalibratingMode()) ? String(sensorData.weightKg, 2) : String(calibrator.compensate(sensorData.tempC, sensorData.weightGr) / 1000.0f, 2);
                 msg += " кг%0A";
 
                 msg += "Температура: " + String(sensorData.tempC, 1) + " °C%0A";
@@ -391,14 +401,14 @@ void loop() {
         case SystemState::SLEEP_SENSORS:
             if (!led.tick()) break;                                             // пока не завершили индикацию - не уходим спать
 
-            scales.sleepMode(true);
-            esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         // настраиваемся на здоровый сон на заданное время
+            //scales.sleepMode(true);
+            /*esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         // настраиваемся на здоровый сон на заданное время
             gpio_wakeup_enable((gpio_num_t)BUTT_PIN, GPIO_INTR_LOW_LEVEL);
             gpio_wakeup_enable((gpio_num_t)CALIB_SWITCH_PIN, GPIO_INTR_LOW_LEVEL);
             esp_sleep_enable_gpio_wakeup();
             esp_task_wdt_delete(NULL);                                          // чтобы WDT во сне не проголодался, отписываемся от мониторнга текущей Task
             esp_light_sleep_start();                                            // засыпаем, после пробуждения код начнет выполнятся со следующей строчки и сразу сменит состояние на WAKEUP_SENSORS
-            esp_task_wdt_add(NULL);                                             // вновь подписываемся на мониторинг текущей Task
+            esp_task_wdt_add(NULL);                                             // вновь подписываемся на мониторинг текущей Task*/
             changeFSMState(SystemState::WAKEUP_SENSORS);               // ставим состояние, которое начнет выполняться после выхода из сна
             break;
 
