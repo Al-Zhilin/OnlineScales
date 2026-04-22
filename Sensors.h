@@ -81,7 +81,7 @@ class ScalesManager {
       float k;
       int32_t new_weight = 1;     //_scales->read()
 
-      if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;         // адаптивный коэффициент
+      if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;     // адаптивный коэффициент
       else k = 0.05;
       _filtered += (new_weight - _filtered) * k;  
       sensorData.weightGr = (float)_filtered / _calibation_factor;  // обновили данные: попугаи -> вес в граммах
@@ -124,7 +124,7 @@ class TempManager {
         _start_timer = millis();
         return TempState::SUCCESS;
       }
-      else if (millis() - _start_timer < 2000) return TempState::BUSY;          // как будто проверка лишняя, ибо метод проверки готовности датчика под капотом DS18b20 - простой таймер, а не проверка сигнала датчика!
+      else if (millis() - _start_timer < 2000) return TempState::BUSY;
       else return TempState::ERROR;
     }
 };

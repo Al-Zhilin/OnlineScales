@@ -61,7 +61,7 @@ SystemState currentState = SystemState::WAKEUP_SENSORS;                         
 ModificationRequests external_request;                  // внешние вмешательства в FSM
 
 float batteryVoltage = 0.0f;                               // Текущее напряжение батареи
-uint8_t restart_reason = 0;                                // см. использование ниже
+//uint8_t restart_reason = 0;                                // см. использование ниже
 String modemPayload = "";                                  // Буфер для сформированного запроса
 String serverResponse = "";                                // Буфер для ответа от VK API
 bool hasModemError = false;                                // Флаг для безопасного отключения при ошибках
@@ -111,14 +111,14 @@ void setup() {
     led.begin();
     tempSensor.begin();
 
-    if (!LittleFS.begin(true)) {                            // инициализируем LittleFS (ляжет под капот FileData)
+    if (!LittleFS.begin(true)) {                         // инициализируем LittleFS (ляжет под капот FileData)
         LOG("CRITICAL ERROR: SPIFFS Mount Failed!");
     }
 
     scales.begin();               
     calibrator.begin();
 
-    restart_reason = (uint8_t)esp_reset_reason();      // причина завешения предыдущей работы
+    //restart_reason = (uint8_t)esp_reset_reason();      // причина завешения предыдущей работы. Пока не используется
 
     esp_task_wdt_config_t twdt_config = {              // настраиваем конфиг для WDT таймера
       .timeout_ms = WDT_TIMEOUT_MS,                         // период перед резетом
@@ -149,11 +149,8 @@ void loop() {
             break;
 
         case SystemState::MEASURE: {                       // измерения температуры и веса                  
-            // = scales.tick();           // после пробуждения hx711 еще примерно 400мс настраивается и делает первое измерение - проверяем готовность перед чтением, иначе - мусор/старые значения! (Но обязательно с защитой от зависания!!)
-            // = tempSensor.tick();         // обновляем и температуру
-
-            if (s_state == ScalesState::BUSY) s_state = scales.tick();
-            if (t_state == TempState::BUSY) t_state = tempSensor.tick();
+            if (s_state == ScalesState::BUSY) s_state = scales.tick();              // после пробуждения hx711 еще примерно 400мс настраивается и делает первое измерение - проверяем готовность перед чтением, иначе - мусор/старые значения! (Но обязательно с защитой от зависания!!)
+            if (t_state == TempState::BUSY) t_state = tempSensor.tick();            // обновляем и температуру, с обработкой готовности и таймаута
 
             if (s_state == ScalesState::BUSY || t_state == TempState::BUSY) {
               //Serial.println(String((s_state == ScalesState::BUSY) ? "Ждем весы..." : "Ждем термометр..."));
