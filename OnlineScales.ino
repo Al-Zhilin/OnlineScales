@@ -142,7 +142,7 @@ void loop() {
     
     switch (currentState) {
         case SystemState::WAKEUP_SENSORS:                  // пробуждаем hx711, переходим к измерениям
-            //scales.sleepMode(false);
+            scales.sleepMode(false);
             changeFSMState(SystemState::MEASURE);
             s_state = ScalesState::BUSY;
             t_state = TempState::BUSY;
@@ -209,8 +209,29 @@ void loop() {
                 
                 String msg = "Калибровка завершена:%0A";
                 if (calibData.calibrated) {
-                    msg += "Выбрана модель: " + String(calibData.modelType) + "%0A";
-                    msg += "Данные сохранены в память";
+                    uint8_t n_params = calibData.modelType + 2;
+                    bool isFirst = true;
+                    for (uint8_t i = 0; i < n_params; i++) {
+                        if (fabs(calibData.params[i]) > 0.000001f) {
+                            if (calibData.params[i] < 0) {
+                                if (isFirst)    msg += "-";
+                                else msg += " - ";
+                            }
+                            else msg += " + ";
+                            isFirst = false;
+
+                            msg += String(fabs(calibData.params[i]), 6);
+                            if (i != n_params-1) {                          // у последнего коэффициента нет переменной = свободный член
+                                msg += "x";
+                                if (n_params-(i+1) > 1) {
+                                    msg += "^";
+                                    msg += n_params-(i+1);
+                                }
+                            }
+                        }
+                    }
+                    if (isFirst) msg += "Все коэффициенты = 0!";
+                    msg += "%0AДанные сохранены в память";
                 } else {
                     msg += "Недостаточно данных, модель не сохранена";
                 }
@@ -358,10 +379,10 @@ void loop() {
                 if (rtc_error_mask & (1 << 2) || rtc_error_mask & (1 << 3)) {
                     if (reboot_budget > 0) {                              // пока не исчерпали перезагрузки - пытаемся запуститься каждые 5 минут
                         is_retry_mode = true;                                                 
-                        LOG("Ошибка связи. Режим повтора через 5 минут.");
+                        LOG("Ошибка связи. Режим повтора по короткому таймауту");
                     } else {                                              // если "жизней" нет - переходим в стандартный режим, более экономичный и ждем чуда
                         is_retry_mode = false;
-                        LOG("Бюджет жизней исчерпан. Удрученный режим: ждем чуда раз в 15 минут.");
+                        LOG("Бюджет перезегрузок исчерпан. Ждем чуда по стандартному таймауту");
                     }
                 }
                 
@@ -398,14 +419,14 @@ void loop() {
         case SystemState::SLEEP_SENSORS:
             if (!led.tick()) break;                                             // пока не завершили индикацию - не уходим спать
 
-            //scales.sleepMode(true);
-            /*esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         // настраиваемся на здоровый сон на заданное время
+            scales.sleepMode(true);
+            esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         // настраиваемся на здоровый сон на заданное время
             gpio_wakeup_enable((gpio_num_t)BUTT_PIN, GPIO_INTR_LOW_LEVEL);
             gpio_wakeup_enable((gpio_num_t)CALIB_SWITCH_PIN, GPIO_INTR_LOW_LEVEL);
             esp_sleep_enable_gpio_wakeup();
             esp_task_wdt_delete(NULL);                                          // чтобы WDT во сне не проголодался, отписываемся от мониторнга текущей Task
             esp_light_sleep_start();                                            // засыпаем, после пробуждения код начнет выполнятся со следующей строчки и сразу сменит состояние на WAKEUP_SENSORS
-            esp_task_wdt_add(NULL);                                             // вновь подписываемся на мониторинг текущей Task*/
+            esp_task_wdt_add(NULL);                                             // вновь подписываемся на мониторинг текущей Task
             changeFSMState(SystemState::WAKEUP_SENSORS);               // ставим состояние, которое начнет выполняться после выхода из сна
             break;
 
