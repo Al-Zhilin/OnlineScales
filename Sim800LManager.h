@@ -21,18 +21,6 @@ namespace ModemCfg {
     constexpr const char* SERVER_PATH = "/method/messages.send";
 };
 
-enum class ModemStatus {
-    IDLE,
-    BUSY,
-    SUCCESS,
-    SUCCESS_WITH_RESTARTS,
-    ERR_NO_SIM,
-    ERR_BOOT_TIMEOUT,
-    ERR_PPP_TIMEOUT,
-    ERR_SERVER_CONNECT,
-    ERR_HTTP_TIMEOUT
-};
-
 enum class WaitResult {
     OK,
     ERROR,

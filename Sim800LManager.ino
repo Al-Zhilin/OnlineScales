@@ -228,7 +228,7 @@ ModemStatus Sim800LManager::processInit() {
 
         default: break;
     }
-    return ModemStatus::BUSY;                                                       
+    return ModemStatus::BUSY_INIT;                                                       
 }
 
 
@@ -376,7 +376,8 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
     
         default: break;
     }
-    return ModemStatus::BUSY;                                                       
+    if (_currentStep >= Step::REQ_HTTP_CONNECT) return ModemStatus::BUSY_HTTP;
+    else return ModemStatus::BUSY_NET;;                                                       
 }
 // -------------------------------------- Выключаем интерфейсы и отключаем модем от питания --------------------------------------
 ModemStatus Sim800LManager::processPowerOff() {

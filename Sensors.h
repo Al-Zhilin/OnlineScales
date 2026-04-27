@@ -17,6 +17,7 @@ class ScalesManager {
     int32_t _offset = 0;                                  // оффсет для тарирования (при первом запуске - ноль)
     float _filtered = 0.0f;                               // здесь актуальное отфильтрованное значение
     uint32_t _tare_timer = 0;                             // для таймера от частого тарирования (напр., если пользователь удерживает кнопку дольше, чем нужно)
+    bool _is_first_read = true;
     uint32_t _start_timer = millis();                     // засекаем millis() после пробуждения HX711 - чтения будем вызыват не ранее, чем после 500мс после запуска (длительность инициализации и первого чтения)
     FileData EEOffset{&LittleFS, "/offset.dat", 'Z', &_offset, sizeof(_offset)};       // объект для управления переменной оффсета в файловой системе
 
@@ -81,18 +82,17 @@ class ScalesManager {
       float k;
       int32_t new_weight = _scales->read();
 
-      if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;     // адаптивный коэффициент
-      else k = 0.05;
-      _filtered += (new_weight - _filtered) * k;  
+      if (_is_first_read) {                               // при первом чтении сразу принимаем вес равным показаниям датчиков, нужно для корректных показаний при FORCE_SEND сразу после запуска
+          _filtered = new_weight;
+          _is_first_read = false;
+      } else {
+          if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;     
+          else k = 0.05;
+          _filtered += (new_weight - _filtered) * k;  
+      }
+
       sensorData.weightGr = (float)_filtered / _calibation_factor;  // обновили данные: попугаи -> вес в граммах
       sensorData.weightKg = sensorData.weightGr / 1000;             // еще и вес в кг тоже обновили
-
-      /*this->sleepMode(false);
-      Serial.print("HX711: ");
-      Serial.print(this->isReady());
-      Serial.print("/");
-      Serial.println((_scales->read() != 0) ? "Есть" : "Нет");
-      delay(100);*/
 
       return ScalesState::SUCCESS;
     }
