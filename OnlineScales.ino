@@ -1,6 +1,6 @@
 #include "Enumerations.h"
 
-//  #define USE_LOG Serial                            // удобный отладчик через Serial (закомментируй эту строку чтобы отключить)
+#define USE_LOG Serial                            // удобный отладчик через Serial (закомментируй эту строку чтобы отключить)
 void logHelper(const __FlashStringHelper* msg, const char* func, const char* file, int line) {          // функция удобного логирования
     #ifdef USE_LOG
         USE_LOG.print(F("> "));
@@ -54,7 +54,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #include <esp_task_wdt.h>
 #include <esp_sleep.h>
 
-constexpr uint32_t DATA_SEND_PERIOD = 60*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
+constexpr uint32_t DATA_SEND_PERIOD = 3*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
 
 SystemState currentState = SystemState::WAKEUP_SENSORS;                              // текущее состояние FSM
 ModificationRequests external_request;                  // внешние вмешательства в FSM
@@ -204,7 +204,7 @@ void loop() {
                 modemPayload += "&message=";
                 modemPayload += msg;
                 
-                postModemState = SystemState::SLEEP_SENSORS;                                                     // После отправки в ВК модем вернет нас в сон!
+                postModemState = SystemState::ERROR_HANDLING;                                                     // После отправки в ВК модем вернет нас в сон!
                 changeFSMState(SystemState::START_MODEM);
                 break;
             }
@@ -251,7 +251,7 @@ void loop() {
                 modemPayload += "&message=";
                 modemPayload += msg;
                 
-                postModemState = SystemState::SLEEP_SENSORS;
+                postModemState = SystemState::ERROR_HANDLING;
                 changeFSMState(SystemState::START_MODEM);
                 break;
             }
@@ -391,18 +391,6 @@ void loop() {
             else {
                 consecutive_errors++;
 
-                if (rtc_error_mask & 3) led.pushReport(LedModes::REP_SENS_ERR);
-                else led.pushReport(LedModes::REP_SENS_OK);
-
-                if (modem_cycle_completed) {                                                                  // если в этом цикле модем работал - запускаем индикацию результатов
-                    if (rtc_error_mask & (1 << 5))      led.pushReport(LedModes::REP_MOD_ERR_SERV);
-                    else if (rtc_error_mask & (1 << 3)) led.pushReport(LedModes::REP_MOD_ERR_NET);
-                    else if (rtc_error_mask & (1 << 2)) led.pushReport(LedModes::REP_MOD_ERR_HW);
-                    else                                led.pushReport(LedModes::REP_MOD_OK);
-                    
-                    modem_cycle_completed = false; // Сбрасываем для следующего прохода
-                }
-
                 // Логика перезагрузок и таймаутов
                 if (rtc_error_mask & (1 << 2) || rtc_error_mask & (1 << 3)) {
                     if (reboot_budget > 0) {                              
@@ -433,6 +421,18 @@ void loop() {
                     delay(100);
                     ESP.restart();
                 }
+            }
+
+            if (rtc_error_mask & 3) led.pushReport(LedModes::REP_SENS_ERR);
+            else led.pushReport(LedModes::REP_SENS_OK);
+
+            if (modem_cycle_completed) {                                                                  // если в этом цикле модем работал - запускаем индикацию результатов
+                if (rtc_error_mask & (1 << 5))      led.pushReport(LedModes::REP_MOD_ERR_SERV);
+                else if (rtc_error_mask & (1 << 3)) led.pushReport(LedModes::REP_MOD_ERR_NET);
+                else if (rtc_error_mask & (1 << 2)) led.pushReport(LedModes::REP_MOD_ERR_HW);
+                else                                led.pushReport(LedModes::REP_MOD_OK);
+                
+                modem_cycle_completed = false; // Сбрасываем для следующего прохода
             }
 
             rtc_error_mask = 0;

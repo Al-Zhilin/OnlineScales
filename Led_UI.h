@@ -83,6 +83,7 @@ public:
     // Мгновенное перекрытие (для дыхания)
     void setMode(LedModes mode) {
         if (!isEnabled()) return;
+        if (_currentMode == mode) return;
         _clearQueue(); 
         _startMode(mode);
     }
