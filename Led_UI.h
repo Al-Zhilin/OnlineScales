@@ -37,6 +37,7 @@ private:
         _currentMode = mode;
         _blinkCount = 0; 
         _isOn = false;
+        _targetBlinks = 0;
 
         switch (mode) {
             // Дыхание

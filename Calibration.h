@@ -159,20 +159,26 @@ class ScaleAutoCalibrator {
       }
 
       delta = max_temp - min_temp;
+      isCalibrating = false;
 
-      if (delta < 5.0f && samplesCount > 10) {
+      // Защита 1: Слишком мало данных
+      if (samplesCount <= 10) {
+        LOG("Calibration Rejected: Not enough samples (<10)");
+        resetCalibrationModels();
+        led.pushReport(LedModes::ACT_CALIB_ERR);
+        return;
+      }
+
+      // Защита 2: Недостаточный температурный диапазон
+      if (delta < 5.0f) {
         LOG("Calibration Rejected: Temperature delta is too small (<5.0C)");
         resetCalibrationModels();
         led.pushReport(LedModes::ACT_CALIB_ERR);
-        isCalibrating = false;
         return;
       }
       
-      isCalibrating = false;
-      if (samplesCount > 10) {          // если модель калибровалась хотя бы 10 тиков (защита от случайного начала процесса)
-        calcBestModel();
-        saveData();
-      }
+      calcBestModel();
+      saveData();
       led.pushReport(LedModes::ACT_CALIB_OK);
     }
 
@@ -185,7 +191,7 @@ class ScaleAutoCalibrator {
       bestModel = 0;
     }
 
-    void resetCalibration() {
+    void resetCalibration() {           // метод принудительного сброса модельных переменных + данных в EEPROM
       resetCalibrationModels();
       isCalibrating = false;
 

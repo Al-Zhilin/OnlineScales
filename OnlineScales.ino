@@ -188,8 +188,6 @@ void loop() {
                 }
             } else {
                 sensor_error_count = 0;
-                // Если датчик пришел в норму и мы не в процессе работы модема — гасим ошибку
-                if (currentState == SystemState::MEASURE) led.setMode(LedModes::NONE);
             }
 
             batteryVoltage = filtrateVolts(analogReadMilliVolts(BATT_PIN)) / 1000.0f * DIVIDER_RATIO;            // читаем напряжение с батареи, фильтруем простым EMA с адаптивным коэффициентом
@@ -212,7 +210,7 @@ void loop() {
                 
                 String msg = "Переключатель переведен в режим калибровки";
                 modemPayload = "peer_ids=";
-                modemPayload += VK_PEER_ID; // Макросы подставятся без создания объекта String
+                modemPayload += VK_PEER_ID;
                 modemPayload += "&random_id=";
                 modemPayload += String(esp_random() & 0x7FFFFFFF);
                 modemPayload += "&v=5.199&access_token=";
@@ -220,7 +218,7 @@ void loop() {
                 modemPayload += "&message=";
                 modemPayload += msg;
                 
-                postModemState = SystemState::ERROR_HANDLING;                                                     // После отправки в ВК модем вернет нас в сон!
+                postModemState = SystemState::ERROR_HANDLING;                           // После отправки в ВК модем вернет нас в сон!
                 changeFSMState(SystemState::START_MODEM);
                 break;
             }

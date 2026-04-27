@@ -18,7 +18,7 @@ void Sim800LManager::sendAT(const char* cmd, const char* expected, uint32_t time
     _expectedAtResponse = expected;
     _currentAtTimeout = timeout;
     _uartBuffer = "";
-    _uartBuffer.reserve(ModemCfg::MAX_UART_LEN);
+    _uartBuffer.reserve(ModemCfg::MAX_HTTP_LEN);                               // Резервируем много памяти под ответ ВК, под буфер общения с SIM хватит и подавно
     _timer = millis();
 }
 
@@ -320,18 +320,18 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             LOG("Модем/HTTP: Соединение установлено! Отправка POST Payload...");
 
             if (!PPP.connected()) return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
-            
-            String request = String("POST ") + ModemCfg::SERVER_PATH + " HTTP/1.1\r\n" +
-                             "Host: " + ModemCfg::SERVER_HOST + "\r\n" +
-                             "Content-Type: application/x-www-form-urlencoded\r\n" +
-                             "Content-Length: " + payload.length() + "\r\n" +
-                             "Connection: close\r\n\r\n" + 
-                             payload;
-            _client.print(request);
+
+            _client.print("POST ");
+            _client.print(ModemCfg::SERVER_PATH);
+            _client.print(" HTTP/1.1\r\nHost: ");
+            _client.print(ModemCfg::SERVER_HOST);
+            _client.print("\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: ");
+            _client.print(payload.length());
+            _client.print("\r\nConnection: close\r\n\r\n");
+            _client.print(payload);
             
             _timer = millis();
             _uartBuffer = ""; 
-            _uartBuffer.reserve(ModemCfg::MAX_HTTP_LEN);                          // Резервируем много памяти под ответ ВК
             
             LOG("Модем/HTTP: Запрос отправлен. Ожидание ответа...");
             _currentStep = Step::REQ_HTTP_WAIT_RES;
@@ -345,37 +345,32 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             break;
 
         case Step::REQ_HTTP_WAIT_RES: {          
-            if (!PPP.connected()) {
-                LOG("Модем/HTTP: FATAL ERROR. PPP линк разорван аппаратно!");
-                _client.stop(); // Мягко закрываем клиент
-                return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
-            }
-
-            // 1. Читаем всё, что падает в буфер
+            // Читаем всё, что падает в буфер
             int bytesRead = 0;
-            while (_client.available() && bytesRead < 1024) {               // порциями по 1024 байта!! Это защита от спама, остальную ее часть - см. в логике
+            while (_client.available() && bytesRead < 1024) {               
                 char c = (char)_client.read();
                 if (_uartBuffer.length() < ModemCfg::MAX_HTTP_LEN) {
                     _uartBuffer += c;
                 }
                 bytesRead++;
             }
+
+            if (_uartBuffer.indexOf("200 OK") != -1) {
+                LOG("Модем/HTTP: Успешность https запроса! Ответ 200 OK получен досрочно");
+                _client.stop(); 
+                response = _uartBuffer; 
+                return finishJob(ModemStatus::SUCCESS);
+            }
             
-            // 2. Сервер закрыл соединение И всё прочитано
+            // Если сервер сам закрыл соединение первым
             if (!_client.connected() && _client.available() == 0) {
                 _client.stop();
-                if (_uartBuffer.indexOf("200 OK") != -1) {                  // в ответе есть "200 ОК" - ответ от VK API, означающий успешность полученного запроса
-                    LOG("Модем/HTTP: Успешность https запроса! Ответ 200 OK получен");
-                    response = _uartBuffer; 
-                    return finishJob(ModemStatus::SUCCESS);
-                } else {
-                    LOG("Модем/HTTP: Ошибка https запроса. Код 200 OK не найден в ответе");
-                    //Serial.println("<<< СЕРВЕР ОТВЕТИЛ: \n" + _uartBuffer); // Выводим в лог тело ошибки
-                    return finishJob(ModemStatus::ERR_HTTP_TIMEOUT);
-                }
+                LOG("Модем/HTTP: Сервер закрыл соединение, но код 200 OK не найден в ответе");
+                return finishJob(ModemStatus::ERR_HTTP_TIMEOUT);
             } 
-            // 3. Защита от бесконечного зависания
-            else if (millis() - _timer >= ModemCfg::HTTP_TIMEOUT_MS) { 
+            
+            // Защита от бесконечного зависания (если сервер молчит)
+            if (millis() - _timer >= ModemCfg::HTTP_TIMEOUT_MS) { 
                 LOG("HTTP: ОШИБКА. Таймаут ожидания ответа от сервера.");
                 _client.stop();
                 return finishJob(ModemStatus::ERR_HTTP_TIMEOUT);
@@ -389,6 +384,7 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
     else return ModemStatus::BUSY_NET;;                                                       
 }
 // -------------------------------------- Выключаем интерфейсы и отключаем модем от питания --------------------------------------
+// -------------------------------------- Выключаем интерфейсы и отключаем модем от питания --------------------------------------
 ModemStatus Sim800LManager::processPowerOff() {
     if (_currentJob != JobType::POWER_OFF) {                                        
         _currentJob = JobType::POWER_OFF;
@@ -398,26 +394,27 @@ ModemStatus Sim800LManager::processPowerOff() {
     switch (_currentStep) {
         case Step::OFF_START:                                                       
             LOG("Модем: Инициировано штатное выключение...");
-            if (_isPppActive) {                                            // Заставляем LwIP безопасно закрыть PPP-сессию, если PPP в данном цикле работы с модемом был поднят
-                PPP.mode(ESP_MODEM_MODE_COMMAND);
-                
-                _timer = millis();
-                _currentStep = Step::OFF_DELAY;
-            } else {
-                Serial1.end(); 
-                digitalWrite(_cfg.pwr_pin, LOW); 
-                LOG("Модем: Полностью обесточен.");
-                return finishJob(ModemStatus::SUCCESS);
+            
+            // 1. Аккуратно закрываем SSL сокет ДО выключения PPP интерфейса
+            if (_isPppActive && PPP.connected()) {
+                _client.stop(); 
             }
+            
+            _timer = millis();
+            _currentStep = Step::OFF_DELAY;
             break;
 
         case Step::OFF_DELAY:                                                       
-            if (millis() - _timer >= 1500) {                               // Даем системе 1.5 секунды на переваривание всех асинхронных событий (Phase DEAD) от LwIP перед тем, как удалять объект из памяти
-                PPP.end();                                                 // Теперь уничтожать объект абсолютно безопасно
-                _isPppActive = false;
-                
+            // 2. Даем LwIP ровно 1.5 секунды на отправку TCP FIN/ACK и очистку мьютексов в памяти.
+            // Это гарантированно предотвратит панику vTaskPriorityDisinheritAfterTimeout!
+            if (millis() - _timer >= 1500) {                          
+                if (_isPppActive) {
+                    PPP.mode(ESP_MODEM_MODE_COMMAND);
+                    PPP.end();
+                    _isPppActive = false;
+                }
                 Serial1.end();
-                digitalWrite(_cfg.pwr_pin, LOW);
+                digitalWrite(_cfg.pwr_pin, LOW); 
                 LOG("Модем: Полностью обесточен.");
                 return finishJob(ModemStatus::SUCCESS);
             }
