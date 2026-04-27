@@ -53,8 +53,7 @@ class RLSModel {
       // Защита от заражения матрицы NaN значениями (критично для матричных операций)
       if (isnan(y) || isnan(current_t) || isinf(y)) return; 
       
-      // Дедбэнд фильтр (защита от сингулярности)
-      if (fabsf(current_t - last_t) < 0.005f) return;
+      if (fabsf(current_t - last_t) < 0.05f) return;
       last_t = current_t;
 
       float K[N], Px[N];
@@ -117,6 +116,8 @@ class ScaleAutoCalibrator {
     uint8_t bestModel = 0; 
     float referenceMass;
     bool isCalibrating = false;
+    float min_temp = 999.0f, max_temp = -999.0f;
+    float delta = 0.0f;
 
     float normT(float t) const { return (t - 25.0f) / 10.0f; }
 
@@ -139,6 +140,10 @@ class ScaleAutoCalibrator {
         LOG("Already Calibrating! Resetting live params...");
         resetCalibrationModels();
       }
+
+      max_temp = -999.0f;
+      min_temp = 999.0f;
+      delta = 0.0f;
       
       isCalibrating = true;
       samplesCount = 0;
@@ -150,6 +155,16 @@ class ScaleAutoCalibrator {
       if (!isCalibrating) {
         LOG("Calibration has not been started!");
         led.pushReport(LedModes::ACT_CALIB_ERR);
+        return;
+      }
+
+      delta = max_temp - min_temp;
+
+      if (delta < 5.0f && samplesCount > 10) {
+        LOG("Calibration Rejected: Temperature delta is too small (<5.0C)");
+        resetCalibrationModels();
+        led.pushReport(LedModes::ACT_CALIB_ERR);
+        isCalibrating = false;
         return;
       }
       
@@ -178,7 +193,6 @@ class ScaleAutoCalibrator {
       calibData.calibrated = false;
       for(int i = 0; i < 4; i++) calibData.params[i] = 0.0f;
 
-      // 2. Меняем updateNow() на write()
       calib_memory.updateNow(); 
       led.pushReport(LedModes::ACT_CALIB_OK);
       LOG("Reset complete!");
@@ -252,6 +266,8 @@ class ScaleAutoCalibrator {
       if (!isCalibrating) return;
       samplesCount++;
       
+      min_temp = min(min_temp, sensorData.tempC);
+      max_temp = max(max_temp, sensorData.tempC);
       float t = normT(sensorData.tempC);
       float error = sensorData.weightGr - referenceMass;
       
@@ -318,7 +334,7 @@ class ScaleAutoCalibrator {
       // Штрафы за сложность модели
       float sLin = linearErrorEMA * 1.0f; 
       float sQuad = quadraticErrorEMA * 1.05f;
-      float sCub = cubicErrorEMA * 1.10f;
+      float sCub = cubicErrorEMA * ((delta > 15.0f) ? 1.10f : (sLin + sQuad));
       
       if (sLin <= sQuad && sLin <= sCub) bestModel = 0;
       else if (sQuad <= sCub) bestModel = 1;
