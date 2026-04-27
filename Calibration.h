@@ -7,7 +7,7 @@ struct ModelEEData {
   bool calibrated = false;          // была ли калибровка?
 } calibData;
 
-extern AsyncLed led;
+extern AsyncLed<LED_PIN> led;
 FileData calib_memory{&LittleFS, "/calib.dat", 'Z', &calibData, sizeof(calibData)};
 
 template <int N>
@@ -143,13 +143,13 @@ class ScaleAutoCalibrator {
       isCalibrating = true;
       samplesCount = 0;
       linearErrorEMA = quadraticErrorEMA = cubicErrorEMA = 0.0f;
-      led.setMode(LedModes::OK);
+      led.pushReport(LedModes::ACT_CALIB_START);
     }
 
     void finishCalibration() {
       if (!isCalibrating) {
         LOG("Calibration has not been started!");
-        led.setMode(LedModes::ERROR);
+        led.pushReport(LedModes::ACT_CALIB_ERR);
         return;
       }
       
@@ -158,7 +158,7 @@ class ScaleAutoCalibrator {
         calcBestModel();
         saveData();
       }
-      led.setMode(LedModes::OK);
+      led.pushReport(LedModes::ACT_CALIB_OK);
     }
 
     void resetCalibrationModels() {     // Отдельный метод для сброса только математики (без EEPROM)
@@ -180,7 +180,7 @@ class ScaleAutoCalibrator {
 
       // 2. Меняем updateNow() на write()
       calib_memory.updateNow(); 
-      led.setMode(LedModes::OK);
+      led.pushReport(LedModes::ACT_CALIB_OK);
       LOG("Reset complete!");
     }
 
@@ -245,7 +245,7 @@ class ScaleAutoCalibrator {
       USE_LOG.println(F("=====================================\n"));
       #endif
       
-      led.setMode(LedModes::WAIT); 
+      led.pushReport(LedModes::ACT_PRINT);
     }
     
     void calibrationStep() {

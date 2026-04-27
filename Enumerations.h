@@ -27,11 +27,20 @@ struct ModificationRequests {
     bool force_send = true;
 };
 
-enum class LedModes : uint8_t {                      // режимы светодиодной индикации
-    OK,
-    ERROR,
-    WAIT,
-    NONE
+enum class LedModes : uint8_t {
+    NONE,
+    BREATH_INIT, BREATH_NET, BREATH_HTTP,                                         // Дыхане: инициализация модема, настройка сети, https запрос
+    REP_SENS_OK, REP_SENS_ERR,                                                    // Отчеты Датчиков: успех/ошибка
+    REP_MOD_OK, REP_MOD_ERR_HW, REP_MOD_ERR_NET, REP_MOD_ERR_SERV,                // Отчеты Модема: успех, ошибка hardware, ошибка настройки сети, ошибка https запроса или соединения с сервером
+    ACT_TARE_OK, ACT_TARE_ERR,                                                    // Action тарирование: успех/ошибка
+    ACT_CALIB_START, ACT_CALIB_OK, ACT_CALIB_ERR, ACT_PRINT                       // Калибровка: начата, успешно завершена, ошибка, печать данны
+};
+
+enum class ModemStatus : uint8_t {
+    IDLE, 
+    BUSY, BUSY_INIT, BUSY_NET, BUSY_HTTP, 
+    SUCCESS, SUCCESS_WITH_RESTARTS,
+    ERR_NO_SIM, ERR_BOOT_TIMEOUT, ERR_PPP_TIMEOUT, ERR_SERVER_CONNECT, ERR_HTTP_TIMEOUT
 };
 
 enum class ScalesState : uint8_t {                   // состояния весовой схемы (тензодатчики + HX711)
