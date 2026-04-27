@@ -34,7 +34,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #define MODEM_TX_PIN 17                                 // пин, подключенный к TX модема
 #define MODEM_RX_PIN 16                                 // пин, подключенный к RX модема
 #define WDT_TIMEOUT_MS 25000                            // период для WDT (миллисекунды)
-#define SLEEP_TIME_SEC 1                               // время сна между измерениями (секунды)
+#define SLEEP_TIME_SEC 30                               // время сна между измерениями (секунды)
 #define BATT_PIN 9                                      // пин чтения напряжения батареи
 #define R1 470000.0f                                    // Резистор от плюса батареи к пину АЦП
 #define R2 100000.0f                                    // Резистор от пина АЦП к земле
@@ -54,7 +54,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #include <esp_task_wdt.h>
 #include <esp_sleep.h>
 
-constexpr uint32_t DATA_SEND_PERIOD = 60*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
+constexpr uint32_t DATA_SEND_PERIOD = 30*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
 
 SystemState currentState = SystemState::WAKEUP_SENSORS;                              // текущее состояние FSM
 ModificationRequests external_request;                  // внешние вмешательства в FSM
