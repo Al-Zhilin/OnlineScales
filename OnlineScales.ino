@@ -34,7 +34,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #define MODEM_TX_PIN 17                                 // пин, подключенный к TX модема
 #define MODEM_RX_PIN 16                                 // пин, подключенный к RX модема
 #define WDT_TIMEOUT_MS 25000                            // период для WDT (миллисекунды)
-#define SLEEP_TIME_SEC 30                               // время сна между измерениями (секунды)
+#define SLEEP_TIME_SEC 1                               // время сна между измерениями (секунды)
 #define BATT_PIN 9                                      // пин чтения напряжения батареи
 #define R1 470000.0f                                    // Резистор от плюса батареи к пину АЦП
 #define R2 100000.0f                                    // Резистор от пина АЦП к земле
@@ -54,7 +54,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #include <esp_task_wdt.h>
 #include <esp_sleep.h>
 
-constexpr uint32_t DATA_SEND_PERIOD = 3*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
+constexpr uint32_t DATA_SEND_PERIOD = 60*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
 
 SystemState currentState = SystemState::WAKEUP_SENSORS;                              // текущее состояние FSM
 ModificationRequests external_request;                  // внешние вмешательства в FSM
@@ -139,6 +139,13 @@ void loop() {
     static ScalesState s_state;
     static TempState t_state;
 
+    /*
+    String inpt = "";
+    while (Serial.available()) {
+      inpt += (char)Serial.read();
+    }
+    if (inpt.startsWith("Тарировать"))  external_request.tare = true;*/
+
     if (external_request.tare)  changeFSMState(SystemState::TARE_PROCESS);          // по событию вызываем тарирование, оно потом самостоятельно откатит current_state на состояние до вызова
     
     switch (currentState) {
@@ -187,7 +194,16 @@ void loop() {
 
             batteryVoltage = filtrateVolts(analogReadMilliVolts(BATT_PIN)) / 1000.0f * DIVIDER_RATIO;            // читаем напряжение с батареи, фильтруем простым EMA с адаптивным коэффициентом
 
-            //Serial.println("HX: " + String(sensorData.weightKg) + "   DS: " + sensorData.tempC + "    Volts: " + batteryVoltage);
+            if (!digitalRead(LED_SWITCH_PIN)) {               // Для отладки! Печать в Serial всех параметров (вес, температура, напряжение)
+              #ifdef USE_LOG
+                USE_LOG.print("HX711: ");
+                USE_LOG.print(sensorData.weightKg);
+                USE_LOG.print(",  DS18b20: ");
+                USE_LOG.print(sensorData.tempC);
+                USE_LOG.print(",  Volts:");
+                USE_LOG.println(batteryVoltage);
+              #endif
+            }
 
             if (external_request.start_calibration) {                                    // пользователь переключил на режим калибровки
                 external_request.start_calibration = false;
@@ -226,7 +242,7 @@ void loop() {
                             else msg += " + ";
                             isFirst = false;
 
-                            msg += String(fabs(calibData.params[i]), 6);
+                            msg += String(fabs(calibData.params[i]), 2);
                             if (i != n_params-1) {                          // у последнего коэффициента нет переменной = свободный член
                                 msg += "x";
                                 if (n_params-(i+1) > 1) {
