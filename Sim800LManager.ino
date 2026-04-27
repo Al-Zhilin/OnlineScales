@@ -318,6 +318,9 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             esp_task_wdt_add(NULL);                                     // возвращаем мониторинг WDT здесь тоже, ведь в if код может не зайти, а задачу нужно добавить обратно обязательно
             _subAttempts = 0; 
             LOG("Модем/HTTP: Соединение установлено! Отправка POST Payload...");
+
+            if (!PPP.connected()) return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
+            
             String request = String("POST ") + ModemCfg::SERVER_PATH + " HTTP/1.1\r\n" +
                              "Host: " + ModemCfg::SERVER_HOST + "\r\n" +
                              "Content-Type: application/x-www-form-urlencoded\r\n" +
@@ -341,7 +344,13 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             }
             break;
 
-        case Step::REQ_HTTP_WAIT_RES: {                                              
+        case Step::REQ_HTTP_WAIT_RES: {          
+            if (!PPP.connected()) {
+                LOG("Модем/HTTP: FATAL ERROR. PPP линк разорван аппаратно!");
+                _client.stop(); // Мягко закрываем клиент
+                return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
+            }
+
             // 1. Читаем всё, что падает в буфер
             int bytesRead = 0;
             while (_client.available() && bytesRead < 1024) {               // порциями по 1024 байта!! Это защита от спама, остальную ее часть - см. в логике

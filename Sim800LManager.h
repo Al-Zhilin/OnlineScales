@@ -16,7 +16,7 @@ namespace ModemCfg {
     constexpr uint16_t MAX_HTTP_LEN       = 4096;   // Защита от переполнения памяти при ответе сервера
     
     // Настройки сети и сервера
-    constexpr const char* APN         = "internet.mts.ru";
+    constexpr const char* APN         = "internet";
     constexpr const char* SERVER_HOST = "api.vk.com";
     constexpr const char* SERVER_PATH = "/method/messages.send";
 };
