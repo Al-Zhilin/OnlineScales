@@ -12,7 +12,7 @@ namespace ModemCfg {
     constexpr uint32_t SIM_TIMEOUT_MS     = 2000;   // Таймаут ответа SIM-карты
     constexpr uint32_t ATTACH_TIMEOUT_MS  = 40000;  // Таймаут ожидания attach() 
     constexpr uint32_t NETWORK_TIMEOUT_MS = 60000;  // Ожидание регистрации в сети
-    constexpr uint32_t HTTP_TIMEOUT_MS    = 17000;  // Ожидание ответа от сервера (суммарно на получение всего ответа)
+    constexpr uint32_t HTTP_TIMEOUT_S     = 17;     // Ожидание ответа от сервера (суммарно на получение всего ответа)
     constexpr uint16_t MAX_UART_LEN       = 256;    // Защита от бесконечного мусора из UART
     constexpr uint16_t MAX_HTTP_LEN       = 4096;   // Защита от переполнения памяти при ответе сервера
     
