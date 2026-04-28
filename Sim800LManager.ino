@@ -296,108 +296,61 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             }
             break;
                                               
+        
         case Step::REQ_HTTP_CONNECT: {                                              
-            LOG("Модем/HTTP: Попытка установки SSL-соединения с сервером VK API...");
-            
-            // 1. АБСОЛЮТНО ЧИСТЫЙ СТАРТ: Уничтожаем старый объект, если он завис в памяти
-            if (_client != nullptr) {
-                delete _client;
-                _client = nullptr;
-            }
-            
-            _client = new NetworkClientSecure();
-            _client->setInsecure();
-            _client->setTimeout(5000);                                   
-            _client->setHandshakeTimeout(30);
-
-            if (!_client->connect(ModemCfg::SERVER_HOST, 443, 15000)) {
-                _subAttempts++;
-                if (_subAttempts <= 3) {                                
-                    LOG("Модем/HTTP: Ошибка SSL. Пауза 3 сек...");
-                    _timer = millis();
-                    _currentStep = Step::REQ_HTTP_RETRY;                
-                    return ModemStatus::BUSY;
-                } else {
-                    LOG("Модем/HTTP: Сервер недоступен. Попытки исчерпаны");
-                    return finishJob(ModemStatus::ERR_SERVER_CONNECT);
-                }
-            }
-            
-            _subAttempts = 0;
-            LOG("Модем/HTTP: Соединение установлено! Отправка POST Payload...");
+            LOG("Модем/HTTP: Установка SSL и отправка через HTTPClient...");
 
             if (!PPP.connected()) return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
-            
-            // 2. ИЗБЕГАЕМ TLS-ШТОРМА: Собираем весь запрос в одну строку!
-            String request = "POST " + String(ModemCfg::SERVER_PATH) + " HTTP/1.1\r\n" +
-                             "Host: " + String(ModemCfg::SERVER_HOST) + "\r\n" +
-                             "Content-Type: application/x-www-form-urlencoded\r\n" +
-                             "Content-Length: " + String(payload.length()) + "\r\n" +
-                             "Connection: keep-alive\r\n\r\n" + 
-                             payload;
-            
-            // Отправляем ОДНИМ вызовом, формируя один TLS-пакет
-            _client->print(request);
-            
-            _timer = millis();
-            _uartBuffer = ""; 
-            
-            LOG("Модем/HTTP: Запрос отправлен. Ожидание ответа...");
-            _currentStep = Step::REQ_HTTP_WAIT_RES;
-            break;
-        }
 
-        case Step::REQ_HTTP_RETRY:
-            if (millis() - _timer >= 3000) {                                      // Между попытками сконнектиться с сервером - 3 секунды
-                _currentStep = Step::REQ_HTTP_CONNECT;
-            }
-            break;
+            // --- МАГИЯ ЗДЕСЬ: Используем static ---
+            // Объект создается один раз и живет в памяти вечно.
+            // Мы БОЛЬШЕ НЕ УДАЛЯЕМ его через delete!
+            // Это гарантирует, что фоновый процесс LwIP никогда не обратится к уничтоженному мьютексу.
+            static NetworkClientSecure secureClient; 
+            
+            secureClient.stop(); // Принудительно очищаем зависшие сокеты от прошлых сеансов
+            secureClient.setInsecure();
+            secureClient.setTimeout(15); 
 
-        case Step::REQ_HTTP_WAIT_RES: {          
-            // Читаем всё доступное
-            while (_client->available()) {               
-                char c = (char)_client->read();
-                if (_uartBuffer.length() < ModemCfg::MAX_HTTP_LEN) {
-                    _uartBuffer += c;
+            HTTPClient http;
+            // Передаем наш статичный клиент по ссылке
+            http.begin(secureClient, String("https://") + ModemCfg::SERVER_HOST + ModemCfg::SERVER_PATH);
+            http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+            // Блокирующий вызов - делает всю работу сам
+            int httpCode = http.POST(payload);
+
+            ModemStatus finalStatus = ModemStatus::ERR_HTTP_TIMEOUT;
+
+            if (httpCode > 0) {
+                if (httpCode == 200) {
+                    response = http.getString();
+                    LOG("Модем/HTTP: Успешно! Ответ 200 OK получен.");
+                    finalStatus = ModemStatus::SUCCESS;
+                } else {
+                    LOG("Модем/HTTP: Ошибка сервера. Код");
+                    finalStatus = ModemStatus::ERR_SERVER_CONNECT;
                 }
+            } else {
+                LOG("Модем/HTTP: Ошибка SSL/Сети");
+                finalStatus = ModemStatus::ERR_HTTP_TIMEOUT;
             }
+
+            // Мягко закрываем сессию на уровне HTTP
+            http.end();
             
-            // 1. Успешный выход (Нашли 200 OK)
-            if (_uartBuffer.indexOf("200 OK") != -1) {                  
-                LOG("Модем/HTTP: Успешность https запроса! Ответ 200 OK получен");
-                _client->stop();
-                delete _client;   // Жестко очищаем PSRAM
-                _client = nullptr;
-                response = _uartBuffer; 
-                return finishJob(ModemStatus::SUCCESS);
-            }
+            // Даем сетевому стеку 1 секунду на физическую отправку прощальных пакетов TCP FIN
+            // в фоновом режиме ДО того, как FSM пойдет выключать модем.
+            delay(1000); 
             
-            // 2. Сервер закрыл соединение первым
-            if (!_client->connected()) {
-                LOG("Модем/HTTP: Ошибка. Сервер разорвал соединение.");
-                _client->stop();
-                delete _client;
-                _client = nullptr;
-                return finishJob(ModemStatus::ERR_HTTP_TIMEOUT);
-            } 
-            
-            // 3. Таймаут
-            if (millis() - _timer >= ModemCfg::HTTP_TIMEOUT_MS) { 
-                LOG("HTTP: ОШИБКА. Таймаут ожидания ответа от сервера.");
-                _client->stop();
-                delete _client;
-                _client = nullptr;
-                return finishJob(ModemStatus::ERR_HTTP_TIMEOUT);
-            }
-            break;
+            return finishJob(finalStatus);
         }
-    
+       
         default: break;
     }
     if (_currentStep >= Step::REQ_HTTP_CONNECT) return ModemStatus::BUSY_HTTP;
     else return ModemStatus::BUSY_NET;;                                                       
 }
-// -------------------------------------- Выключаем интерфейсы и отключаем модем от питания --------------------------------------
 // -------------------------------------- Выключаем интерфейсы и отключаем модем от питания --------------------------------------
 ModemStatus Sim800LManager::processPowerOff() {
     if (_currentJob != JobType::POWER_OFF) {                                        
@@ -406,33 +359,26 @@ ModemStatus Sim800LManager::processPowerOff() {
     }
 
     switch (_currentStep) {
-       case Step::OFF_START:                                                       
-            LOG("Модем: Инициировано штатное выключение...");
-            if (_isPppActive) {
-                // Уничтожаем объект клиента ПЕРЕД отключением PPP, чтобы не оставить висящих сокетов
-                if (_client != nullptr) {
-                    _client->stop();
-                    delete _client;
-                    _client = nullptr;
-                }
-                
-                PPP.mode(ESP_MODEM_MODE_COMMAND);
-            }
+        case Step::OFF_START:                                                       
+            LOG("Модем: Инициировано штатное выключение. Ожидание очистки сокетов LwIP...");
+            
+            // ВАЖНО: Мы больше НЕ вызываем PPP.mode(ESP_MODEM_MODE_COMMAND) здесь!
+            // Мы просто запускаем таймер тишины, чтобы дать фоновому ядру ОС закончить TCP-обмен.
             _timer = millis();
             _currentStep = Step::OFF_DELAY;
             break;
 
         case Step::OFF_DELAY:                                                       
-            // 2. Даем LwIP ровно 1.5 секунды на отправку TCP FIN/ACK и очистку мьютексов в памяти.
-            // Это гарантированно предотвратит панику vTaskPriorityDisinheritAfterTimeout!
-            if (millis() - _timer >= 1500) {                          
+            // Даем системе 3 секунды на закрытие всех соединений в фоне.
+            if (millis() - _timer >= 3000) {                          
                 if (_isPppActive) {
-                    PPP.mode(ESP_MODEM_MODE_COMMAND);
-                    PPP.end();
+                    PPP.end(); // Безопасно удаляем сетевой интерфейс из ОС
                     _isPppActive = false;
                 }
+                
+                Serial1.flush();
                 Serial1.end();
-                digitalWrite(_cfg.pwr_pin, LOW); 
+                digitalWrite(_cfg.pwr_pin, LOW); // Жестко рубим питание
                 LOG("Модем: Полностью обесточен.");
                 return finishJob(ModemStatus::SUCCESS);
             }
