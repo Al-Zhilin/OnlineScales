@@ -7,7 +7,7 @@ private:
     Adafruit_NeoPixel strip;
     uint8_t _switch_pin;
     
-    LedModes _queue[5];                                 // очередь индикаций
+    LedModes _queue[5];
     uint8_t _qHead = 0;
     uint8_t _qTail = 0;
 
@@ -20,7 +20,6 @@ private:
     uint32_t _color = 0;
 
     bool isEnabled() { return !digitalRead(_switch_pin); }
-
     void _clearQueue() { _qHead = 0; _qTail = 0; }
 
     void _popAndStart() {
@@ -40,31 +39,28 @@ private:
         _targetBlinks = 0;
 
         switch (mode) {
-            // Дыхание
             case LedModes::BREATH_INIT: _color = strip.Color(0,0,255); break;
             case LedModes::BREATH_NET:  _color = strip.Color(255,150,0); break;
             case LedModes::BREATH_HTTP: _color = strip.Color(255,0,255); break;
-            // Датчики (1 Длинный)
             case LedModes::REP_SENS_OK:  _color = strip.Color(0,255,0); _targetBlinks = 1; _interval = 500; break;
             case LedModes::REP_SENS_ERR: _color = strip.Color(255,0,0); _targetBlinks = 1; _interval = 500; break;
-            // Модем (Короткие)
             case LedModes::REP_MOD_OK:       _color = strip.Color(0,255,0); _targetBlinks = 2; _interval = 150; break;
             case LedModes::REP_MOD_ERR_HW:   _color = strip.Color(255,0,0); _targetBlinks = 2; _interval = 150; break;
             case LedModes::REP_MOD_ERR_NET:  _color = strip.Color(255,0,0); _targetBlinks = 3; _interval = 150; break;
             case LedModes::REP_MOD_ERR_SERV: _color = strip.Color(255,0,0); _targetBlinks = 4; _interval = 150; break;
-            // Спец-индикации
-            case LedModes::ACT_TARE_OK:     _color = strip.Color(0,255,255); _targetBlinks = 3; _interval = 100; break;         // Голубой
-            case LedModes::ACT_TARE_ERR:    _color = strip.Color(255,100,0); _targetBlinks = 3; _interval = 100; break;         // Оранжевый
-            case LedModes::ACT_CALIB_START: _color = strip.Color(255,255,255); _targetBlinks = 2; _interval = 150; break;       // Белый
-            case LedModes::ACT_CALIB_OK:    _color = strip.Color(255,255,255); _targetBlinks = 1; _interval = 800; break;       // Белый
-            case LedModes::ACT_CALIB_ERR:   _color = strip.Color(255,0,0);     _targetBlinks = 4; _interval = 100; break;       // Красный
-            case LedModes::ACT_PRINT:       _color = strip.Color(0,0,255);     _targetBlinks = 1; _interval = 800; break;       // Синий
+            case LedModes::ACT_TARE_OK:     _color = strip.Color(0,255,255); _targetBlinks = 3; _interval = 100; break;
+            case LedModes::ACT_TARE_ERR:    _color = strip.Color(255,100,0); _targetBlinks = 3; _interval = 100; break;
+            case LedModes::ACT_CALIB_START: _color = strip.Color(255,255,255); _targetBlinks = 2; _interval = 150; break;
+            case LedModes::ACT_CALIB_OK:    _color = strip.Color(255,255,255); _targetBlinks = 1; _interval = 800; break;
+            case LedModes::ACT_CALIB_ERR:   _color = strip.Color(255,0,0);     _targetBlinks = 4; _interval = 100; break;
+            case LedModes::ACT_PRINT:       _color = strip.Color(0,0,255);     _targetBlinks = 1; _interval = 800; break;
             default: break;
         }
 
-        if (_targetBlinks > 0) { // Мгновенный старт вспышек
+        strip.setBrightness(255); // Возвращаем яркость на 100% перед морганием
+
+        if (_targetBlinks > 0) { 
             _isOn = true;
-            strip.setBrightness(100);
             strip.setPixelColor(0, _color);
             strip.show();
         }
@@ -77,11 +73,11 @@ public:
     void begin() {
         pinMode(_switch_pin, INPUT_PULLUP);
         strip.begin();
-        strip.setBrightness(100);
-        strip.setPixelColor(0, 0); strip.show();
+        strip.setBrightness(255);
+        strip.setPixelColor(0, 0); 
+        strip.show();
     }
 
-    // Мгновенное перекрытие (для дыхания)
     void setMode(LedModes mode) {
         if (!isEnabled()) return;
         if (_currentMode == mode) return;
@@ -89,7 +85,6 @@ public:
         _startMode(mode);
     }
 
-    // Добавление в очередь отчетов
     void pushReport(LedModes mode) {
         if (!isEnabled() || mode == LedModes::NONE) return;
         
@@ -107,25 +102,33 @@ public:
     }
 
     bool tick() {
-        if (!isEnabled()) {                                 // отключение при выключении тумблера
+        if (!isEnabled()) {
             _clearQueue();
             if (_currentMode != LedModes::NONE) {
                 _currentMode = LedModes::NONE;
                 strip.setPixelColor(0, 0); strip.show();
             }
-            return true;                                    // Разрешаем сон
+            return true;
         }
 
-        if (_currentMode == LedModes::NONE) return true;    // Разрешаем сон
+        if (_currentMode == LedModes::NONE) return true;
 
-        // Логика дыхания
+        // ИСПРАВЛЕННОЕ Логика дыхания (без setBrightness)
        if (_targetBlinks == 0) {
             static uint32_t lastFrame = 0;
             if (millis() - lastFrame >= 33) {  
                 lastFrame = millis();
-                float wave = (sin(millis() / 318.3f) + 1.0f) / 2.0f; 
-                strip.setBrightness(10 + (wave * 90));
-                strip.setPixelColor(0, _color); 
+                float wave = (sin(millis() / 318.3f) + 1.0f) / 2.0f; // от 0.0 до 1.0
+                
+                // Распаковываем цвет (RGB)
+                uint8_t r = (uint8_t)(_color >> 16);
+                uint8_t g = (uint8_t)(_color >> 8);
+                uint8_t b = (uint8_t)_color;
+                
+                // Масштабируем яркость цвета вручную (от 5% до 40% яркости, чтобы не слепило)
+                float scale = 0.05f + (wave * 0.35f); 
+                
+                strip.setPixelColor(0, strip.Color(r * scale, g * scale, b * scale)); 
                 strip.show();
             }
             return false; 
@@ -133,14 +136,14 @@ public:
 
         // Логика очереди
         uint32_t currentInterval = _interval;
-        if (!_isOn && _blinkCount >= _targetBlinks) currentInterval = 800;          // Между отчетами о разных составляющих системы
+        if (!_isOn && _blinkCount >= _targetBlinks) currentInterval = 800;
 
         if (millis() - _timer >= currentInterval) {
             _timer = millis();
             
             if (!_isOn) {
                 if (_blinkCount >= _targetBlinks) {
-                    _popAndStart();                                                 // Берем следующий отчет из очереди
+                    _popAndStart();                                                 
                     return false;
                 }
                 _isOn = true;

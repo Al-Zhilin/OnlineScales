@@ -9,6 +9,8 @@ void Sim800LManager::begin(Config cfg) {
     pinMode(_cfg.rst_pin, OUTPUT);
     digitalWrite(_cfg.pwr_pin, LOW);  // по умолчанию модем выкл
     pinMode(_cfg.rst_pin, INPUT);     // RST "в воздухе", чтобы не держать модем в вечном сбросе. Боюсь, что 3.3В логики не хватит для отпускания RST, попробую подвешенное состояние
+
+    _uartBuffer.reserve(ModemCfg::MAX_HTTP_LEN);                               // Резервируем много памяти под ответ ВК, под буфер общения с SIM хватит и подавно
 }
 
 void Sim800LManager::sendAT(const char* cmd, const char* expected, uint32_t timeout) {
@@ -18,7 +20,6 @@ void Sim800LManager::sendAT(const char* cmd, const char* expected, uint32_t time
     _expectedAtResponse = expected;
     _currentAtTimeout = timeout;
     _uartBuffer = "";
-    _uartBuffer.reserve(ModemCfg::MAX_HTTP_LEN);                               // Резервируем много памяти под ответ ВК, под буфер общения с SIM хватит и подавно
     _timer = millis();
 }
 
