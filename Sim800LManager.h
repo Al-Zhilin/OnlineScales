@@ -2,6 +2,7 @@
 #define SIM800L_MANAGER_H
 
 #include <NetworkClientSecure.h>
+#include <HTTPClient.h>
 #include <PPP.h>
 
 // --- Унифицированные настройки (constexpr) ---
@@ -73,7 +74,7 @@ private:
     uint8_t _subAttempts = 0;                           // микро попытки, т.е. счетчики повторов в конкретных шагах
     bool _hardwareRestarted = false;
 
-    NetworkClientSecure* _client = nullptr;             // выбираем HTTPS т.к. api.vk только по нему общается
+    //NetworkClientSecure* _client = nullptr;             // выбираем HTTPS т.к. api.vk только по нему общается
 
     String _uartBuffer;                                 // буфер парсинга ответа модема
     const char* _expectedAtResponse;                    // ожидаемый ответ (обычно "OK" или подобное)

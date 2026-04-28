@@ -54,7 +54,7 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #include <esp_task_wdt.h>
 #include <esp_sleep.h>
 
-constexpr uint32_t DATA_SEND_PERIOD = 30*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
+constexpr uint32_t DATA_SEND_PERIOD = 3*60*1000UL;     // период отправки данных в нормальном режиме работы (первое число - минуты)
 
 SystemState currentState = SystemState::WAKEUP_SENSORS;                              // текущее состояние FSM
 ModificationRequests external_request;                  // внешние вмешательства в FSM

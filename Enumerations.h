@@ -24,7 +24,7 @@ struct ModificationRequests {
     bool tare = false;
     bool start_calibration = false;
     bool end_calibration = false;
-    bool force_send = false;
+    bool force_send = true;
 };
 
 enum class LedModes : uint8_t {

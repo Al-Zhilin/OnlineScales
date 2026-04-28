@@ -119,10 +119,15 @@ public:
         if (_currentMode == LedModes::NONE) return true;    // Разрешаем сон
 
         // Логика дыхания
-        if (_targetBlinks == 0) {
-            float wave = (sin(millis() / 318.3f) + 1.0f) / 2.0f; 
-            strip.setBrightness(10 + (wave * 90));
-            strip.setPixelColor(0, _color); strip.show();
+       if (_targetBlinks == 0) {
+            static uint32_t lastFrame = 0;
+            if (millis() - lastFrame >= 33) {  
+                lastFrame = millis();
+                float wave = (sin(millis() / 318.3f) + 1.0f) / 2.0f; 
+                strip.setBrightness(10 + (wave * 90));
+                strip.setPixelColor(0, _color); 
+                strip.show();
+            }
             return false; 
         }
 
