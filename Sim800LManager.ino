@@ -82,12 +82,21 @@ ModemStatus Sim800LManager::processInit() {
             if (millis() - _timer >= 2000)  _currentStep = Step::INIT_START;
             break;
 
-        case Step::INIT_START:                             // стартуем Serial, запускаем модем                                                
+       case Step::INIT_START:                             
             LOG("Модем: Включение питания и инициализация интерфейсов...");
+            
+            // 1. Снимаем изоляцию сна! Возвращаем пины аппаратному контроллеру UART
+            gpio_reset_pin((gpio_num_t)_cfg.tx_pin);
+            gpio_reset_pin((gpio_num_t)_cfg.rx_pin);
             
             Serial1.begin(9600, SERIAL_8N1, _cfg.rx_pin, _cfg.tx_pin);
             
+            // 2. Дергаем RST, чтобы сбросить любые ошибки кадра внутри SIM800L
+            pinMode(_cfg.rst_pin, OUTPUT);
+            digitalWrite(_cfg.rst_pin, LOW);
+            delay(100);
             pinMode(_cfg.rst_pin, INPUT);      
+            
             digitalWrite(_cfg.pwr_pin, HIGH);  
             
             _timer = millis();
@@ -363,20 +372,21 @@ ModemStatus Sim800LManager::processPowerOff() {
             break;
 
         case Step::OFF_DELAY:                                                       
-            // Даем системе 3 секунды на закрытие всех соединений в фоне.
             if (millis() - _timer >= 3000) {                          
                 if (_isPppActive) {
-                    PPP.end(); // Безопасно удаляем сетевой интерфейс из ОС
+                    PPP.end();
                     _isPppActive = false;
                 }
-                
                 Serial1.flush();
                 Serial1.end();
                 digitalWrite(_cfg.pwr_pin, LOW); // Жестко рубим питание
-                pinMode(MODEM_TX_PIN, OUTPUT);
-                digitalWrite(MODEM_TX_PIN, LOW);
-                pinMode(MODEM_RX_PIN, OUTPUT);
-                digitalWrite(MODEM_RX_PIN, LOW);
+                
+                // ИЗОЛЯЦИЯ ПИНОВ ОТ УТЕЧЕК ТОКА (Защита от нагрева!)
+                pinMode(_cfg.tx_pin, OUTPUT);
+                digitalWrite(_cfg.tx_pin, LOW);
+                pinMode(_cfg.rx_pin, OUTPUT);
+                digitalWrite(_cfg.rx_pin, LOW);
+                
                 LOG("Модем: Полностью обесточен.");
                 return finishJob(ModemStatus::SUCCESS);
             }
