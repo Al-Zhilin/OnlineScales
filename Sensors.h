@@ -15,9 +15,7 @@ class ScalesManager {
     GyverHX711 *_scales;
     float _calibation_factor;                             // коэффициент для перевода значения с датчиков веса в осмысленные граммы
     int32_t _offset = 0;                                  // оффсет для тарирования (при первом запуске - ноль)
-    float _filtered = 0.0f;                               // здесь актуальное отфильтрованное значение
     uint32_t _tare_timer = 0;                             // для таймера от частого тарирования (напр., если пользователь удерживает кнопку дольше, чем нужно)
-    bool _is_first_read = true;
     uint32_t _start_timer = millis();                     // засекаем millis() после пробуждения HX711 - чтения будем вызыват не ранее, чем после 500мс после запуска (длительность инициализации и первого чтения)
     FileData EEOffset{&LittleFS, "/offset.dat", 'Z', &_offset, sizeof(_offset)};       // объект для управления переменной оффсета в файловой системе
 
@@ -81,15 +79,11 @@ class ScalesManager {
 
       float k;
       int32_t new_weight = _scales->read();
+      static float _filtered = new_weight;                          // при первом чтении (создании для static мгновенно подхватит актуальное значение, фильтру не придется долго догонять от нуля до new_weight)
 
-      if (_is_first_read) {                               // при первом чтении сразу принимаем вес равным показаниям датчиков, нужно для корректных показаний при FORCE_SEND сразу после запуска
-          _filtered = new_weight;
-          _is_first_read = false;
-      } else {
-          if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;     
-          else k = 0.05;
-          _filtered += (new_weight - _filtered) * k;  
-      }
+      if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;     
+      else k = 0.05;
+      _filtered += (new_weight - _filtered) * k;  
 
       sensorData.weightGr = (float)_filtered / _calibation_factor;  // обновили данные: попугаи -> вес в граммах
       sensorData.weightKg = sensorData.weightGr / 1000;             // еще и вес в кг тоже обновили
@@ -102,6 +96,7 @@ class TempManager {
   private:
     GyverDS18Single *_temp_sensor;                        // хранимое отфильтрованное значение
     uint32_t _start_timer;                                // таймер между между успешными измерениями. Если датчик не готов дольше этого времени - он работает некорректно!!
+    bool first_read = true;
 
   public:
     TempManager(uint8_t pin) {
@@ -115,13 +110,20 @@ class TempManager {
 
     TempState tick() {
       if (_temp_sensor->tick() == DS18_READY) {
-        float new_temp = _temp_sensor->getTemp();
 
-        float k = 0.05;
-        if (fabsf(new_temp - sensorData.tempC) > 1.0)  k = 0.9;
-        else if (fabsf(new_temp - sensorData.tempC) > 0.5) k = 0.75;
+        if (first_read) {
+          sensorData.tempC =  _temp_sensor->getTemp();
+          first_read = false;
+        }
+        else {
+          float new_temp = _temp_sensor->getTemp();
+          float k = 0.05;
+          if (fabsf(new_temp - sensorData.tempC) > 1.0)  k = 0.9;
+          else if (fabsf(new_temp - sensorData.tempC) > 0.5) k = 0.75;
 
-        sensorData.tempC += (new_temp - sensorData.tempC) * k;
+          sensorData.tempC += (new_temp - sensorData.tempC) * k;
+        }
+
         _start_timer = millis();
         return TempState::SUCCESS;
       }
@@ -130,7 +132,7 @@ class TempManager {
     }
 };
 
-
+// Функция EMA для значения от делителя напряжения батареи (сглаживаем скачки и помехи)
 float filtrateVolts(float new_meas) {
   static float filtrated = new_meas;
   float k;

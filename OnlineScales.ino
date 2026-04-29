@@ -192,7 +192,7 @@ void loop() {
 
             batteryVoltage = filtrateVolts(analogReadMilliVolts(BATT_PIN)) / 1000.0f * DIVIDER_RATIO;            // читаем напряжение с батареи, фильтруем простым EMA с адаптивным коэффициентом
 
-            if (!digitalRead(LED_SWITCH_PIN)) {               // Для отладки! Печать в Serial всех параметров (вес, температура, напряжение)
+            if (!digitalRead(LED_SWITCH_PIN)) {               // Для отладки! Печать в Serial всех параметров (вес, температура, напряжение) при включенном переключателе
               #ifdef USE_LOG
                 USE_LOG.print("HX711: ");
                 USE_LOG.print(sensorData.weightKg);
@@ -298,14 +298,14 @@ void loop() {
                 // При ошибке с датчиком температуры не пытаемся компенсировать вес некорретным значением - отправляем сырое
                 // Метод compensate сам вернет сырые значения, если калибровка не была проведена - поэтому обработка этого случая здесь не требуется
                 msg += "Текущий вес: ";
-                msg += (t_state != TempState::ERROR) ? String(calibrator.compensate(sensorData.tempC, sensorData.weightGr) / 1000.0f, 2) : String(sensorData.weightKg, 2);
+                msg += (t_state != TempState::ERROR || !calibrator.isCalibratingMode()) ? String(calibrator.compensate(sensorData.tempC, sensorData.weightGr) / 1000.0f, 2) : String(sensorData.weightKg, 2);
                 msg += " кг%0A";
 
                 msg += "Температура: " + String(sensorData.tempC, 1) + " °C%0A";
 
                 if (calibrator.isCalibratingMode()) {
                     msg += "Вес с компенсацией: " + String(calibrator.compensate(sensorData.tempC, sensorData.weightGr) / 1000.0f, 2) + " кг%0A";
-                    msg += "Неуверенность калибратора: " + String(calibrator.getUncertainty(), 4) + "%0A";
+                    msg += "Неуверенность: " + String(calibrator.getUncertainty(), 4) + "%0A";
                 }
 
                 msg += "Напряжение батареи: " + String(batteryVoltage) + "В";
@@ -458,14 +458,26 @@ void loop() {
         case SystemState::SLEEP_SENSORS:
             if (!led.tick()) break;
 
+            pinMode(MODEM_TX_PIN, OUTPUT);
+            digitalWrite(MODEM_TX_PIN, LOW);
+            pinMode(MODEM_RX_PIN, OUTPUT);
+            digitalWrite(MODEM_RX_PIN, LOW);
+            
+            pinMode(LED_PIN, OUTPUT);
+            digitalWrite(LED_PIN, LOW);
+
             scales.sleepMode(true);
             esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         
             gpio_wakeup_enable((gpio_num_t)BUTT_PIN, GPIO_INTR_LOW_LEVEL);
             gpio_wakeup_enable((gpio_num_t)CALIB_SWITCH_PIN, GPIO_INTR_LOW_LEVEL);
             esp_sleep_enable_gpio_wakeup();
-            esp_task_wdt_delete(NULL);                                          
+
+            esp_task_wdt_delete(NULL);                          
             esp_light_sleep_start();
             esp_task_wdt_add(NULL);
+
+            Serial1.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
+
             changeFSMState(SystemState::WAKEUP_SENSORS);
             break;
 
