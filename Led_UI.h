@@ -4,7 +4,7 @@
 template <int PIN>
 class AsyncLed {
 private:
-    Adafruit_NeoPixel strip;
+    Adafruit_NeoPixel* strip = nullptr;
     uint8_t _switch_pin;
     
     LedModes _queue[5];
@@ -25,7 +25,7 @@ private:
     void _popAndStart() {
         if (_qHead == _qTail) {
             _currentMode = LedModes::NONE;
-            strip.setPixelColor(0, 0); strip.show();
+            if (strip) { strip->setPixelColor(0, 0); strip->show(); }
             return;
         }
         _startMode(_queue[_qHead]);
@@ -39,43 +39,60 @@ private:
         _targetBlinks = 0;
 
         switch (mode) {
-            case LedModes::BREATH_INIT: _color = strip.Color(0,0,255); break;
-            case LedModes::BREATH_NET:  _color = strip.Color(255,150,0); break;
-            case LedModes::BREATH_HTTP: _color = strip.Color(255,0,255); break;
-            case LedModes::REP_SENS_OK:  _color = strip.Color(0,255,0); _targetBlinks = 1; _interval = 500; break;
-            case LedModes::REP_SENS_ERR: _color = strip.Color(255,0,0); _targetBlinks = 1; _interval = 500; break;
-            case LedModes::REP_MOD_OK:       _color = strip.Color(0,255,0); _targetBlinks = 2; _interval = 150; break;
-            case LedModes::REP_MOD_ERR_HW:   _color = strip.Color(255,0,0); _targetBlinks = 2; _interval = 150; break;
-            case LedModes::REP_MOD_ERR_NET:  _color = strip.Color(255,0,0); _targetBlinks = 3; _interval = 150; break;
-            case LedModes::REP_MOD_ERR_SERV: _color = strip.Color(255,0,0); _targetBlinks = 4; _interval = 150; break;
-            case LedModes::ACT_TARE_OK:     _color = strip.Color(0,255,255); _targetBlinks = 3; _interval = 100; break;
-            case LedModes::ACT_TARE_ERR:    _color = strip.Color(255,100,0); _targetBlinks = 3; _interval = 100; break;
-            case LedModes::ACT_CALIB_START: _color = strip.Color(255,255,255); _targetBlinks = 2; _interval = 150; break;
-            case LedModes::ACT_CALIB_OK:    _color = strip.Color(255,255,255); _targetBlinks = 1; _interval = 800; break;
-            case LedModes::ACT_CALIB_ERR:   _color = strip.Color(255,0,0);     _targetBlinks = 4; _interval = 100; break;
-            case LedModes::ACT_PRINT:       _color = strip.Color(0,0,255);     _targetBlinks = 1; _interval = 800; break;
+            case LedModes::BREATH_INIT: _color = 0x0000FF; break;
+            case LedModes::BREATH_NET:  _color = 0xFF9600; break;
+            case LedModes::BREATH_HTTP: _color = 0xFF00FF; break;
+            case LedModes::REP_SENS_OK:  _color = 0x00FF00; _targetBlinks = 1; _interval = 500; break;
+            case LedModes::REP_SENS_ERR: _color = 0xFF0000; _targetBlinks = 1; _interval = 500; break;
+            case LedModes::REP_MOD_OK:       _color = 0x00FF00; _targetBlinks = 2; _interval = 150; break;
+            case LedModes::REP_MOD_ERR_HW:   _color = 0xFF0000; _targetBlinks = 2; _interval = 150; break;
+            case LedModes::REP_MOD_ERR_NET:  _color = 0xFF0000; _targetBlinks = 3; _interval = 150; break;
+            case LedModes::REP_MOD_ERR_SERV: _color = 0xFF0000; _targetBlinks = 4; _interval = 150; break;
+            case LedModes::ACT_TARE_OK:     _color = 0x00FFFF; _targetBlinks = 3; _interval = 100; break;
+            case LedModes::ACT_TARE_ERR:    _color = 0xFF6400; _targetBlinks = 3; _interval = 100; break;
+            case LedModes::ACT_CALIB_START: _color = 0xFFFFFF; _targetBlinks = 2; _interval = 150; break;
+            case LedModes::ACT_CALIB_OK:    _color = 0xFFFFFF; _targetBlinks = 1; _interval = 800; break;
+            case LedModes::ACT_CALIB_ERR:   _color = 0xFF0000; _targetBlinks = 4; _interval = 100; break;
+            case LedModes::ACT_PRINT:       _color = 0x0000FF; _targetBlinks = 1; _interval = 800; break;
             default: break;
         }
 
-        strip.setBrightness(255); // Возвращаем яркость на 100% перед морганием
-
-        if (_targetBlinks > 0) { 
-            _isOn = true;
-            strip.setPixelColor(0, _color);
-            strip.show();
+        if (strip) {
+            if (_targetBlinks > 0) { 
+                _isOn = true;
+                strip->setPixelColor(0, _color);
+                strip->show();
+            }
         }
         _timer = millis();
     }
 
 public:
-    AsyncLed(uint8_t switch_pin) : strip(1, PIN, NEO_GRB + NEO_KHZ800), _switch_pin(switch_pin) {}
+    AsyncLed(uint8_t switch_pin) : _switch_pin(switch_pin) {}
 
     void begin() {
         pinMode(_switch_pin, INPUT_PULLUP);
-        strip.begin();
-        strip.setBrightness(255);
-        strip.setPixelColor(0, 0); 
-        strip.show();
+        if (strip == nullptr) {
+            strip = new Adafruit_NeoPixel(1, PIN, NEO_GRB + NEO_KHZ800);
+            strip->begin();
+            strip->setBrightness(255);
+            strip->setPixelColor(0, 0); 
+            strip->show();
+        }
+    }
+    void powerOff() {
+        if (strip != nullptr) {
+            strip->clear();
+            strip->show();
+            
+            delay(5);
+            
+            delete strip; 
+            strip = nullptr;
+        }
+        // Защищаем пин от утечек тока
+        pinMode(PIN, OUTPUT);
+        digitalWrite(PIN, LOW);
     }
 
     void setMode(LedModes mode) {
@@ -106,16 +123,16 @@ public:
             _clearQueue();
             if (_currentMode != LedModes::NONE) {
                 _currentMode = LedModes::NONE;
-                strip.setPixelColor(0, 0); strip.show();
+                if (strip) { strip->setPixelColor(0, 0); strip->show(); }
             }
             return true;
         }
 
         if (_currentMode == LedModes::NONE) return true;
 
-        if (_targetBlinks == 0) {
+        if (_targetBlinks == 0 && strip) {
             static uint32_t lastFrame = 0;
-            if (millis() - lastFrame >= 33) {  // Ограничитель в 30 FPS
+            if (millis() - lastFrame >= 33) {  
                 lastFrame = millis();
                 float wave = (sin(millis() / 318.3f) + 1.0f) / 2.0f; 
                 
@@ -124,18 +141,16 @@ public:
                 uint8_t b = (uint8_t)_color;
                 
                 float scale = 0.05f + (wave * 0.35f); 
-                
-                strip.setPixelColor(0, strip.Color(r * scale, g * scale, b * scale)); 
-                strip.show();
+                strip->setPixelColor(0, strip->Color(r * scale, g * scale, b * scale)); 
+                strip->show();
             }
             return false; 
         }
 
-        // Логика очереди
         uint32_t currentInterval = _interval;
         if (!_isOn && _blinkCount >= _targetBlinks) currentInterval = 800;
 
-        if (millis() - _timer >= currentInterval) {
+        if (millis() - _timer >= currentInterval && strip) {
             _timer = millis();
             
             if (!_isOn) {
@@ -144,13 +159,13 @@ public:
                     return false;
                 }
                 _isOn = true;
-                strip.setPixelColor(0, _color);
+                strip->setPixelColor(0, _color);
             } else {
                 _isOn = false;
-                strip.setPixelColor(0, 0);
+                strip->setPixelColor(0, 0);
                 _blinkCount++;
             }
-            strip.show();
+            strip->show();
         }
         return false;
     }

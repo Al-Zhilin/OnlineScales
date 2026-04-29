@@ -151,6 +151,7 @@ void loop() {
     switch (currentState) {
         case SystemState::WAKEUP_SENSORS:                  // пробуждаем hx711, переходим к измерениям
             scales.sleepMode(false);
+            led.begin();
             changeFSMState(SystemState::MEASURE);
             s_state = ScalesState::BUSY;
             t_state = TempState::BUSY;
@@ -463,6 +464,7 @@ void loop() {
 
         case SystemState::SLEEP_SENSORS:
             if (!led.tick()) break;
+            led.powerOff();
             
             scales.sleepMode(true);
             esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         
