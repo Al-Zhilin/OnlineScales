@@ -320,11 +320,11 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
                     LOG("Модем/HTTP: Успешно! Ответ 200 OK получен.");
                     finalStatus = ModemStatus::SUCCESS;
                 } else {
-                    LOG("Модем/HTTP: Ошибка сервера. Код: " + String(httpCode));
+                    LOG("Модем/HTTP: Ошибка сервера. Код");
                     finalStatus = ModemStatus::ERR_SERVER_CONNECT;
                 }
             } else {
-                LOG("Модем/HTTP: Ошибка SSL/Сети: " + http.errorToString(httpCode));
+                LOG("Модем/HTTP: Ошибка SSL/Сети");
                 finalStatus = ModemStatus::ERR_HTTP_TIMEOUT;
             }
 
