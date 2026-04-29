@@ -303,11 +303,15 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
 
             if (!PPP.connected()) return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
 
+            // --- МАГИЯ ЗДЕСЬ: Используем static ---
+            // Объект создается один раз и живет в памяти вечно.
+            // Мы БОЛЬШЕ НЕ УДАЛЯЕМ его через delete!
+            // Это гарантирует, что фоновый процесс LwIP никогда не обратится к уничтоженному мьютексу.
             static NetworkClientSecure secureClient; 
             
             secureClient.stop(); // Принудительно очищаем зависшие сокеты от прошлых сеансов
             secureClient.setInsecure();
-            secureClient.setTimeout(ModemCfg::HTTP_TIMEOUT_S); 
+            secureClient.setTimeout(15); 
 
             HTTPClient http;
             // Передаем наш статичный клиент по ссылке
@@ -322,10 +326,10 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             if (httpCode > 0) {
                 if (httpCode == 200) {
                     response = http.getString();
-                    LOG("Модем/HTTP: Успешно! Ответ 200 OK получен");
+                    LOG("Модем/HTTP: Успешно! Ответ 200 OK получен.");
                     finalStatus = ModemStatus::SUCCESS;
                 } else {
-                    LOG("Модем/HTTP: Ошибка сервера");
+                    LOG("Модем/HTTP: Ошибка сервера. Код");
                     finalStatus = ModemStatus::ERR_SERVER_CONNECT;
                 }
             } else {
@@ -359,6 +363,8 @@ ModemStatus Sim800LManager::processPowerOff() {
         case Step::OFF_START:                                                       
             LOG("Модем: Инициировано штатное выключение. Ожидание очистки сокетов LwIP...");
             
+            // ВАЖНО: Мы больше НЕ вызываем PPP.mode(ESP_MODEM_MODE_COMMAND) здесь!
+            // Мы просто запускаем таймер тишины, чтобы дать фоновому ядру ОС закончить TCP-обмен.
             _timer = millis();
             _currentStep = Step::OFF_DELAY;
             break;
