@@ -85,7 +85,7 @@ ModemStatus Sim800LManager::processInit() {
         case Step::INIT_START:                             // стартуем Serial, запускаем модем                                                
             LOG("Модем: Включение питания и инициализация интерфейсов...");
             
-            Serial1.begin(9600, SERIAL_8N1, _cfg.rx_pin, _cfg.tx_pin); 
+            Serial1.begin(9600, SERIAL_8N1, _cfg.rx_pin, _cfg.tx_pin);
             
             pinMode(_cfg.rst_pin, INPUT);      
             digitalWrite(_cfg.pwr_pin, HIGH);  
@@ -374,6 +374,10 @@ ModemStatus Sim800LManager::processPowerOff() {
                 Serial1.flush();
                 Serial1.end();
                 digitalWrite(_cfg.pwr_pin, LOW); // Жестко рубим питание
+                pinMode(MODEM_TX_PIN, OUTPUT);
+                digitalWrite(MODEM_TX_PIN, LOW);
+                pinMode(MODEM_RX_PIN, OUTPUT);
+                digitalWrite(MODEM_RX_PIN, LOW);
                 LOG("Модем: Полностью обесточен.");
                 return finishJob(ModemStatus::SUCCESS);
             }
