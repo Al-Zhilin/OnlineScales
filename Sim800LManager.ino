@@ -300,27 +300,18 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
         
         case Step::REQ_HTTP_CONNECT: {                                              
             LOG("Модем/HTTP: Установка SSL и отправка через HTTPClient...");
-
             if (!PPP.connected()) return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
 
-            // --- МАГИЯ ЗДЕСЬ: Используем static ---
-            // Объект создается один раз и живет в памяти вечно.
-            // Мы БОЛЬШЕ НЕ УДАЛЯЕМ его через delete!
-            // Это гарантирует, что фоновый процесс LwIP никогда не обратится к уничтоженному мьютексу.
-            static NetworkClientSecure secureClient; 
-            
-            secureClient.stop(); // Принудительно очищаем зависшие сокеты от прошлых сеансов
+            // 1. Создаем ЛОКАЛЬНЫЙ объект (он будет безопасно уничтожен при выходе из функции)
+            NetworkClientSecure secureClient; 
             secureClient.setInsecure();
             secureClient.setTimeout(15); 
 
             HTTPClient http;
-            // Передаем наш статичный клиент по ссылке
             http.begin(secureClient, String("https://") + ModemCfg::SERVER_HOST + ModemCfg::SERVER_PATH);
             http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
-            // Блокирующий вызов - делает всю работу сам
             int httpCode = http.POST(payload);
-
             ModemStatus finalStatus = ModemStatus::ERR_HTTP_TIMEOUT;
 
             if (httpCode > 0) {
@@ -329,19 +320,21 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
                     LOG("Модем/HTTP: Успешно! Ответ 200 OK получен.");
                     finalStatus = ModemStatus::SUCCESS;
                 } else {
-                    LOG("Модем/HTTP: Ошибка сервера. Код");
+                    LOG("Модем/HTTP: Ошибка сервера. Код: " + String(httpCode));
                     finalStatus = ModemStatus::ERR_SERVER_CONNECT;
                 }
             } else {
-                LOG("Модем/HTTP: Ошибка SSL/Сети");
+                LOG("Модем/HTTP: Ошибка SSL/Сети: " + http.errorToString(httpCode));
                 finalStatus = ModemStatus::ERR_HTTP_TIMEOUT;
             }
 
-            // Мягко закрываем сессию на уровне HTTP
             http.end();
             
-            // Даем сетевому стеку 1 секунду на физическую отправку прощальных пакетов TCP FIN
-            // в фоновом режиме ДО того, как FSM пойдет выключать модем.
+            // 2. Явно разрываем SSL соединение на уровне mbedtls
+            secureClient.stop(); 
+            
+            // 3. Даем фоновому ядру LwIP ровно 1 секунду на отправку прощального пакета 
+            // по медленному UART-каналу ДО того, как secureClient удалится из оперативной памяти.
             delay(1000); 
             
             return finishJob(finalStatus);

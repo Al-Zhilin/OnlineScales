@@ -113,19 +113,16 @@ public:
 
         if (_currentMode == LedModes::NONE) return true;
 
-        // ИСПРАВЛЕННОЕ Логика дыхания (без setBrightness)
-       if (_targetBlinks == 0) {
+        if (_targetBlinks == 0) {
             static uint32_t lastFrame = 0;
-            if (millis() - lastFrame >= 33) {  
+            if (millis() - lastFrame >= 33) {  // Ограничитель в 30 FPS
                 lastFrame = millis();
-                float wave = (sin(millis() / 318.3f) + 1.0f) / 2.0f; // от 0.0 до 1.0
+                float wave = (sin(millis() / 318.3f) + 1.0f) / 2.0f; 
                 
-                // Распаковываем цвет (RGB)
                 uint8_t r = (uint8_t)(_color >> 16);
                 uint8_t g = (uint8_t)(_color >> 8);
                 uint8_t b = (uint8_t)_color;
                 
-                // Масштабируем яркость цвета вручную (от 5% до 40% яркости, чтобы не слепило)
                 float scale = 0.05f + (wave * 0.35f); 
                 
                 strip.setPixelColor(0, strip.Color(r * scale, g * scale, b * scale)); 

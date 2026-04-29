@@ -464,9 +464,6 @@ void loop() {
         case SystemState::SLEEP_SENSORS:
             if (!led.tick()) break;
             
-            pinMode(LED_PIN, OUTPUT);
-            digitalWrite(LED_PIN, LOW);
-
             scales.sleepMode(true);
             esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         
             gpio_wakeup_enable((gpio_num_t)BUTT_PIN, GPIO_INTR_LOW_LEVEL);
