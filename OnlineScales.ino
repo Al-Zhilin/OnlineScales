@@ -60,7 +60,7 @@ SystemState currentState = SystemState::WAKEUP_SENSORS;                         
 ModificationRequests external_request;                  // внешние вмешательства в FSM
 
 float batteryVoltage = 0.0f;                               // Текущее напряжение батареи
-//uint8_t restart_reason = 0;                              // см. использование ниже
+uint8_t restart_reason = 0;                              // см. использование ниже
 String modemPayload = "";                                  // Буфер для сформированного запроса
 String serverResponse = "";                                // Буфер для ответа от VK API
 bool hasModemError = false;                                // Флаг для безопасного отключения при ошибках
@@ -119,7 +119,7 @@ void setup() {
     scales.begin();               
     calibrator.begin();
 
-    //restart_reason = (uint8_t)esp_reset_reason();      // причина завешения предыдущей работы. Пока не используется
+    restart_reason = (uint8_t)esp_reset_reason();      // причина завешения предыдущей работы. Пока не используется
 
     esp_task_wdt_config_t twdt_config = {              // настраиваем конфиг для WDT таймера
       .timeout_ms = WDT_TIMEOUT_MS,                         // период перед резетом
@@ -274,11 +274,11 @@ void loop() {
 
             // выбор: если ранее были проблемы с модемом - попробуем еще раз запустить его по маленькому таймауту, если все было ок - то по стандартному
             if (millis() - sendState_timer >= (is_retry_mode ? DATA_RETRY_PERIOD : DATA_SEND_PERIOD) || external_request.force_send) {               // в данном цикле пришло время/нужно принудительно отправлять данные               
+                hasModemError = false;
+
                 if (external_request.force_send) {
                     external_request.force_send = false;
                 }
-
-                hasModemError = false;
 
                 String compact_errors = "";           // строка, содержащая наглядное представление содержания битовой маски ошибок
                 compact_errors.reserve(8);
@@ -315,6 +315,11 @@ void loop() {
                      msg += "%0AErrors: " + compact_errors;            // пользователь увидет только коды ошибок = циферки, которые легко расшифровываюцца
                 }
 
+                if (restart_reason != 99) {
+                    msg += "%0AStart Code: ";
+                    msg += restart_reason;
+                }
+
                 // Упаковываем в формат x-www-form-urlencoded для VK API ---
                 modemPayload = "peer_ids=";
                 modemPayload += VK_PEER_ID; // Макросы подставятся без создания объекта String
@@ -322,6 +327,7 @@ void loop() {
                 modemPayload += String(esp_random() & 0x7FFFFFFF);
                 modemPayload += "&v=5.199&access_token=";
                 modemPayload += VK_TOKEN;
+                
                 modemPayload += "&message=";
                 modemPayload += msg;
 
@@ -406,7 +412,7 @@ void loop() {
                 consecutive_errors++;
 
                 // Логика перезагрузок и таймаутов
-                if (rtc_error_mask & (1 << 2) || rtc_error_mask & (1 << 3)) {
+                if (rtc_error_mask & (1 << 2) || rtc_error_mask & (1 << 3) || rtc_error_mask & (1 << 5)) {
                     if (reboot_budget > 0) {                              
                         is_retry_mode = true;
                         LOG("Ошибка связи. Режим повтора по короткому таймауту");
@@ -457,11 +463,6 @@ void loop() {
 
         case SystemState::SLEEP_SENSORS:
             if (!led.tick()) break;
-
-            pinMode(MODEM_TX_PIN, OUTPUT);
-            digitalWrite(MODEM_TX_PIN, LOW);
-            pinMode(MODEM_RX_PIN, OUTPUT);
-            digitalWrite(MODEM_RX_PIN, LOW);
             
             pinMode(LED_PIN, OUTPUT);
             digitalWrite(LED_PIN, LOW);
@@ -475,8 +476,6 @@ void loop() {
             esp_task_wdt_delete(NULL);                          
             esp_light_sleep_start();
             esp_task_wdt_add(NULL);
-
-            Serial1.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
 
             changeFSMState(SystemState::WAKEUP_SENSORS);
             break;
