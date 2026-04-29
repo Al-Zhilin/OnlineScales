@@ -112,7 +112,7 @@ ModemStatus Sim800LManager::processInit() {
             break;
 
         case Step::INIT_AT_SEND:
-            // "Будим" UART модема
+            clearUART();
             for (int i = 0; i < 5; i++) {                   // спамим чтобы убедить его в принятии нашей скорости передачи
                 Serial1.println("AT");
                 delay(50);
@@ -311,14 +311,17 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             LOG("Модем/HTTP: Установка SSL и отправка через HTTPClient...");
             if (!PPP.connected()) return finishJob(ModemStatus::ERR_PPP_TIMEOUT);
 
-            // 1. Создаем ЛОКАЛЬНЫЙ объект (он будет безопасно уничтожен при выходе из функции)
-            NetworkClientSecure secureClient; 
-            secureClient.setInsecure();
-            secureClient.setTimeout(15); 
+            // Очищаем старую сессию от прошлого цикла. Объект при этом НЕ уничтожается!
+            _client.stop(); 
+            _client.setInsecure();
+            _client.setTimeout(15); 
 
             HTTPClient http;
-            http.begin(secureClient, String("https://") + ModemCfg::SERVER_HOST + ModemCfg::SERVER_PATH);
+            http.begin(_client, String("https://") + ModemCfg::SERVER_HOST + ModemCfg::SERVER_PATH);
             http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+            
+            // ПРИНУДИТЕЛЬНО просим сервер ВК закрыть сокет, чтобы он не висел вечно
+            http.addHeader("Connection", "close"); 
 
             int httpCode = http.POST(payload);
             ModemStatus finalStatus = ModemStatus::ERR_HTTP_TIMEOUT;
@@ -329,7 +332,7 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
                     LOG("Модем/HTTP: Успешно! Ответ 200 OK получен.");
                     finalStatus = ModemStatus::SUCCESS;
                 } else {
-                    LOG("Модем/HTTP: Ошибка сервера. Код");
+                    LOG("Модем/HTTP: Ошибка сервера");
                     finalStatus = ModemStatus::ERR_SERVER_CONNECT;
                 }
             } else {
@@ -337,14 +340,11 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
                 finalStatus = ModemStatus::ERR_HTTP_TIMEOUT;
             }
 
-            http.end();
+            http.end(); // Библиотека аккуратно закроет стрим
             
-            // 2. Явно разрываем SSL соединение на уровне mbedtls
-            secureClient.stop(); 
-            
-            // 3. Даем фоновому ядру LwIP ровно 1 секунду на отправку прощального пакета 
-            // по медленному UART-каналу ДО того, как secureClient удалится из оперативной памяти.
-            delay(1000); 
+            // ВАЖНО: Мы даем фоновому процессу LwIP время обработать прощальные TCP-пакеты.
+            // Так как _client бессмертный, LwIP обращается к здоровой памяти, и КРАША БОЛЬШЕ НЕТ.
+            delay(500); 
             
             return finishJob(finalStatus);
         }

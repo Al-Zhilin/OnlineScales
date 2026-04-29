@@ -4,7 +4,7 @@
 template <int PIN>
 class AsyncLed {
 private:
-    Adafruit_NeoPixel* strip = nullptr;
+    Adafruit_NeoPixel strip; // Возвращаем статичный объект! Никаких утечек памяти.
     uint8_t _switch_pin;
     
     LedModes _queue[5];
@@ -25,7 +25,7 @@ private:
     void _popAndStart() {
         if (_qHead == _qTail) {
             _currentMode = LedModes::NONE;
-            if (strip) { strip->setPixelColor(0, 0); strip->show(); }
+            strip.setPixelColor(0, 0); strip.show();
             return;
         }
         _startMode(_queue[_qHead]);
@@ -57,40 +57,30 @@ private:
             default: break;
         }
 
-        if (strip) {
-            if (_targetBlinks > 0) { 
-                _isOn = true;
-                strip->setPixelColor(0, _color);
-                strip->show();
-            }
+        if (_targetBlinks > 0) { 
+            _isOn = true;
+            strip.setPixelColor(0, _color);
+            strip.show();
         }
         _timer = millis();
     }
 
 public:
-    AsyncLed(uint8_t switch_pin) : _switch_pin(switch_pin) {}
+    AsyncLed(uint8_t switch_pin) : strip(1, PIN, NEO_GRB + NEO_KHZ800), _switch_pin(switch_pin) {}
 
     void begin() {
         pinMode(_switch_pin, INPUT_PULLUP);
-        if (strip == nullptr) {
-            strip = new Adafruit_NeoPixel(1, PIN, NEO_GRB + NEO_KHZ800);
-            strip->begin();
-            strip->setBrightness(255);
-            strip->setPixelColor(0, 0); 
-            strip->show();
-        }
+        strip.begin();
+        strip.setBrightness(255);
+        strip.setPixelColor(0, 0); 
+        strip.show();
     }
+
     void powerOff() {
-        if (strip != nullptr) {
-            strip->clear();
-            strip->show();
-            
-            delay(5);
-            
-            delete strip; 
-            strip = nullptr;
-        }
-        // Защищаем пин от утечек тока
+        strip.clear();
+        strip.show();
+        delay(5);
+        // Защищаем пин от утечек тока во сне
         pinMode(PIN, OUTPUT);
         digitalWrite(PIN, LOW);
     }
@@ -123,14 +113,14 @@ public:
             _clearQueue();
             if (_currentMode != LedModes::NONE) {
                 _currentMode = LedModes::NONE;
-                if (strip) { strip->setPixelColor(0, 0); strip->show(); }
+                strip.setPixelColor(0, 0); strip.show();
             }
             return true;
         }
 
         if (_currentMode == LedModes::NONE) return true;
 
-        if (_targetBlinks == 0 && strip) {
+        if (_targetBlinks == 0) {
             static uint32_t lastFrame = 0;
             if (millis() - lastFrame >= 33) {  
                 lastFrame = millis();
@@ -141,8 +131,8 @@ public:
                 uint8_t b = (uint8_t)_color;
                 
                 float scale = 0.05f + (wave * 0.35f); 
-                strip->setPixelColor(0, strip->Color(r * scale, g * scale, b * scale)); 
-                strip->show();
+                strip.setPixelColor(0, strip.Color(r * scale, g * scale, b * scale)); 
+                strip.show();
             }
             return false; 
         }
@@ -150,7 +140,7 @@ public:
         uint32_t currentInterval = _interval;
         if (!_isOn && _blinkCount >= _targetBlinks) currentInterval = 800;
 
-        if (millis() - _timer >= currentInterval && strip) {
+        if (millis() - _timer >= currentInterval) {
             _timer = millis();
             
             if (!_isOn) {
@@ -159,13 +149,13 @@ public:
                     return false;
                 }
                 _isOn = true;
-                strip->setPixelColor(0, _color);
+                strip.setPixelColor(0, _color);
             } else {
                 _isOn = false;
-                strip->setPixelColor(0, 0);
+                strip.setPixelColor(0, 0);
                 _blinkCount++;
             }
-            strip->show();
+            strip.show();
         }
         return false;
     }
