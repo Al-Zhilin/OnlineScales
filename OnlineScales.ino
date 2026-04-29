@@ -319,6 +319,7 @@ void loop() {
                 if (restart_reason != 99) {
                     msg += "%0AStart Code: ";
                     msg += restart_reason;
+                    restart_reason = 99;
                 }
 
                 // Упаковываем в формат x-www-form-urlencoded для VK API ---
