@@ -31,8 +31,8 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #define CALIB_SWITCH_PIN 2                              // пин переключателя режимов работы
 #define MODEM_PWR_PIN 5                                 // пин, управляющий транзистором питания модема
 #define MODEM_RST_PIN 4                                 // пин, подключенный к RST SIM800L
-#define MODEM_TX_PIN 17                                 // пин, подключенный к TX модема
-#define MODEM_RX_PIN 16                                 // пин, подключенный к RX модема
+#define MODEM_TX_PIN 17                                 // пин, подключенный к RX модема
+#define MODEM_RX_PIN 16                                 // пин, подключенный к TX модема
 #define WDT_TIMEOUT_MS 25000                            // период для WDT (миллисекунды)
 #define SLEEP_TIME_SEC 30                               // время сна между измерениями (секунды)
 #define BATT_PIN 9                                      // пин чтения напряжения батареи
