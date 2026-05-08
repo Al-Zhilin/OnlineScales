@@ -1,10 +1,9 @@
 #pragma once
-#include <Adafruit_NeoPixel.h>
+#include <Arduino.h>
 
 template <int PIN>
 class AsyncLed {
 private:
-    Adafruit_NeoPixel strip; // Возвращаем статичный объект! Никаких утечек памяти.
     uint8_t _switch_pin;
     
     LedModes _queue[5];
@@ -22,10 +21,22 @@ private:
     bool isEnabled() { return !digitalRead(_switch_pin); }
     void _clearQueue() { _qHead = 0; _qTail = 0; }
 
+    // --- МАГИЯ ЗДЕСЬ: Нативная функция без сторонних библиотек ---
+    void _setPixel(uint8_t r, uint8_t g, uint8_t b) {
+        // Если вдруг твоя лента искажает цвета (например, красный горит зеленым),
+        // просто поменяй местами переменные ниже, например: (PIN, g, r, b)
+        #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+            rgbLedWrite(PIN, r, g, b); // Для нового ядра ESP32 (3.x)
+        #else
+            neopixelWrite(PIN, r, g, b); // Для классического ядра ESP32 (2.x)
+        #endif
+    }
+    // -------------------------------------------------------------
+
     void _popAndStart() {
         if (_qHead == _qTail) {
             _currentMode = LedModes::NONE;
-            strip.setPixelColor(0, 0); strip.show();
+            _setPixel(0, 0, 0);
             return;
         }
         _startMode(_queue[_qHead]);
@@ -59,28 +70,27 @@ private:
 
         if (_targetBlinks > 0) { 
             _isOn = true;
-            strip.setPixelColor(0, _color);
-            strip.show();
+            uint8_t r = (uint8_t)(_color >> 16);
+            uint8_t g = (uint8_t)(_color >> 8);
+            uint8_t b = (uint8_t)_color;
+            _setPixel(r, g, b);
         }
         _timer = millis();
     }
 
 public:
-    AsyncLed(uint8_t switch_pin) : strip(1, PIN, NEO_GRB + NEO_KHZ800), _switch_pin(switch_pin) {}
+    AsyncLed(uint8_t switch_pin) : _switch_pin(switch_pin) {}
 
     void begin() {
         pinMode(_switch_pin, INPUT_PULLUP);
-        strip.begin();
-        strip.setBrightness(255);
-        strip.setPixelColor(0, 0); 
-        strip.show();
+        _setPixel(0, 0, 0);
     }
 
     void powerOff() {
-        strip.clear();
-        strip.show();
+        _setPixel(0, 0, 0);
         delay(5);
-        // Защищаем пин от утечек тока во сне
+        // Теперь мы можем смело обрывать пин! Нативный драйвер уже завершил работу.
+        // Ток не утекает, плата холодная, ядро не ругается.
         pinMode(PIN, OUTPUT);
         digitalWrite(PIN, LOW);
     }
@@ -113,7 +123,7 @@ public:
             _clearQueue();
             if (_currentMode != LedModes::NONE) {
                 _currentMode = LedModes::NONE;
-                strip.setPixelColor(0, 0); strip.show();
+                _setPixel(0, 0, 0);
             }
             return true;
         }
@@ -131,8 +141,7 @@ public:
                 uint8_t b = (uint8_t)_color;
                 
                 float scale = 0.05f + (wave * 0.35f); 
-                strip.setPixelColor(0, strip.Color(r * scale, g * scale, b * scale)); 
-                strip.show();
+                _setPixel(r * scale, g * scale, b * scale);
             }
             return false; 
         }
@@ -149,13 +158,15 @@ public:
                     return false;
                 }
                 _isOn = true;
-                strip.setPixelColor(0, _color);
+                uint8_t r = (uint8_t)(_color >> 16);
+                uint8_t g = (uint8_t)(_color >> 8);
+                uint8_t b = (uint8_t)_color;
+                _setPixel(r, g, b);
             } else {
                 _isOn = false;
-                strip.setPixelColor(0, 0);
+                _setPixel(0, 0, 0);
                 _blinkCount++;
             }
-            strip.show();
         }
         return false;
     }

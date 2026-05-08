@@ -85,19 +85,12 @@ ModemStatus Sim800LManager::processInit() {
        case Step::INIT_START:                             
             LOG("Модем: Включение питания и инициализация интерфейсов...");
             
-            // 1. Снимаем изоляцию сна! Возвращаем пины аппаратному контроллеру UART
-            gpio_reset_pin((gpio_num_t)_cfg.tx_pin);
-            gpio_reset_pin((gpio_num_t)_cfg.rx_pin);
-            
             Serial1.begin(9600, SERIAL_8N1, _cfg.rx_pin, _cfg.tx_pin);
-            
-            // 2. Дергаем RST, чтобы сбросить любые ошибки кадра внутри SIM800L
-            pinMode(_cfg.rst_pin, OUTPUT);
-            digitalWrite(_cfg.rst_pin, LOW);
-            delay(100);
-            pinMode(_cfg.rst_pin, INPUT);      
-            
+
+            // Включаем питание
             digitalWrite(_cfg.pwr_pin, HIGH);  
+        
+            pinMode(_cfg.rst_pin, INPUT);      
             
             _timer = millis();
             _currentStep = Step::INIT_PWR_DELAY; 
@@ -113,6 +106,7 @@ ModemStatus Sim800LManager::processInit() {
 
         case Step::INIT_AT_SEND:
             clearUART();
+                       
             for (int i = 0; i < 5; i++) {                   // спамим чтобы убедить его в принятии нашей скорости передачи
                 Serial1.println("AT");
                 delay(50);
@@ -134,6 +128,7 @@ ModemStatus Sim800LManager::processInit() {
                     LOG("Модем: Успешный ответ на AT. UART синхронизирован!");
                 } else {                                            // не успел в таймаут или вернул ERROR
                     _subAttempts++;
+                    //Serial.println("result: " + res);
                     if (_subAttempts < 5) {
                         _timer = millis();
                         _currentStep = Step::INIT_AT_DELAY;
@@ -381,7 +376,7 @@ ModemStatus Sim800LManager::processPowerOff() {
                 Serial1.end();
                 digitalWrite(_cfg.pwr_pin, LOW); // Жестко рубим питание
                 
-                // ИЗОЛЯЦИЯ ПИНОВ ОТ УТЕЧЕК ТОКА (Защита от нагрева!)
+                // Исключение возможности паразитного питания модема от TX и RX пинов
                 pinMode(_cfg.tx_pin, OUTPUT);
                 digitalWrite(_cfg.tx_pin, LOW);
                 pinMode(_cfg.rx_pin, OUTPUT);
