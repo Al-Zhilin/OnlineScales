@@ -57,7 +57,11 @@ WaitResult Sim800LManager::waitAT(String& outResponse) {
 }
 
 void Sim800LManager::clearUART() {
-    while (Serial1.available()) Serial1.read();
+    int max_bytes = 256; // Защита от бесконечной генерации нулей при обрыве линии
+    while (Serial1.available() && max_bytes > 0) {
+        Serial1.read();
+        max_bytes--;
+    }
 }
 
 ModemStatus Sim800LManager::finishJob(ModemStatus status) {                    // синтаксический "сахар": прогоняет через себя возвратное значение + делает рутинную работу, чтобы не писать каждый раз одно и то же       
@@ -84,6 +88,9 @@ ModemStatus Sim800LManager::processInit() {
 
        case Step::INIT_START:                             
             LOG("Модем: Включение питания и инициализация интерфейсов...");
+
+            //gpio_reset_pin((gpio_num_t)_cfg.tx_pin);
+            //gpio_reset_pin((gpio_num_t)_cfg.rx_pin);
             
             Serial1.begin(9600, SERIAL_8N1, _cfg.rx_pin, _cfg.tx_pin);
 
@@ -252,7 +259,7 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             LOG("Модем/PPP: Поднятие GPRS/PPP интерфейса...");
             
             // 1. Закрываем UART с небольшой паузой
-            Serial1.flush();
+            //Serial1.flush();
             Serial1.end(); 
             delay(100);
             
@@ -372,15 +379,15 @@ ModemStatus Sim800LManager::processPowerOff() {
                     PPP.end();
                     _isPppActive = false;
                 }
-                Serial1.flush();
+
                 Serial1.end();
-                digitalWrite(_cfg.pwr_pin, LOW); // Жестко рубим питание
+                digitalWrite(_cfg.pwr_pin, LOW); // Рубим питание
                 
-                // Исключение возможности паразитного питания модема от TX и RX пинов
-                pinMode(_cfg.tx_pin, OUTPUT);
-                digitalWrite(_cfg.tx_pin, LOW);
-                pinMode(_cfg.rx_pin, OUTPUT);
-                digitalWrite(_cfg.rx_pin, LOW);
+                // Переводим пины в Z-состояние (высокий импеданс). 
+                // Ток утекать не будет (плата останется холодной 13мА),
+                // и мы избегаем КЗ линии RX на землю!
+                pinMode(_cfg.tx_pin, INPUT);
+                pinMode(_cfg.rx_pin, INPUT);
                 
                 LOG("Модем: Полностью обесточен.");
                 return finishJob(ModemStatus::SUCCESS);
