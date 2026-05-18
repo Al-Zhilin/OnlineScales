@@ -41,6 +41,12 @@ class ScalesManager {
       if (millis() - _tare_timer < 5000) return ScalesState::ERROR;        
       _tare_timer = millis();
 
+      uint32_t wait_available_timer = millis();
+      while (millis() - wait_available_timer < 1000 && !this->isReady()) {}
+      if (millis() - wait_available_timer >= 1000) {    // не дождались готовности
+        return ScalesState::ERROR;
+      }
+
       _scales->tare();
 
       if (abs(_scales->read()) <= STANDART_NOISE) {                   

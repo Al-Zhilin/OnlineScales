@@ -1,4 +1,5 @@
 #include "Sim800LManager.h"
+extern RTC_DATA_ATTR uint8_t rtc_crash_step;
 
 Sim800LManager::Sim800LManager() : _isPppActive(false) {    }
 
@@ -80,6 +81,8 @@ ModemStatus Sim800LManager::processInit() {
     }
 
     String res;
+
+    rtc_crash_step = (uint8_t)_currentStep;
 
     switch (_currentStep) {
         case Step::INIT_START_DELAY:                       // ждем пару секунд перед новой попыткой
@@ -254,6 +257,8 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
         _subAttempts = 0;
     }
 
+    rtc_crash_step = (uint8_t)_currentStep;
+
     switch (_currentStep) {
         case Step::REQ_PPP_BEGIN: {                                                  
             LOG("Модем/PPP: Поднятие GPRS/PPP интерфейса...");
@@ -269,9 +274,9 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             
             PPP.setResetPin(_cfg.rst_pin, true, 200);
 
-            //esp_task_wdt_delete(NULL); 
+            esp_task_wdt_delete(NULL); 
             bool ppp_ok = PPP.begin(PPP_MODEM_SIM800);                        // под капотом блокирующая, останавливаем мониторинг WDT, чтобы случайно не инициировать триггер рестарта
-            //esp_task_wdt_add(NULL); 
+            esp_task_wdt_add(NULL); 
             
             if (!ppp_ok) {                                                    // программный перезапуск/повторный вызов PPP.begin() - очень хрупкий и сложный механизм, надежнее перезапустить модем питанием
                 LOG("Модем/PPP: Критическая ошибка. Не удалось запустить драйвер PPP!");
@@ -324,8 +329,11 @@ ModemStatus Sim800LManager::processRequest(const String& payload, String& respon
             
             // ПРИНУДИТЕЛЬНО просим сервер ВК закрыть сокет, чтобы он не висел вечно
             http.addHeader("Connection", "close"); 
-
+            
+            esp_task_wdt_delete(NULL);
             int httpCode = http.POST(payload);
+            esp_task_wdt_add(NULL);
+            
             ModemStatus finalStatus = ModemStatus::ERR_HTTP_TIMEOUT;
 
             if (httpCode > 0) {
@@ -362,6 +370,8 @@ ModemStatus Sim800LManager::processPowerOff() {
         _currentJob = JobType::POWER_OFF;
         _currentStep = Step::OFF_START;
     }
+
+    rtc_crash_step = (uint8_t)_currentStep;
 
     switch (_currentStep) {
         case Step::OFF_START:                                                       
