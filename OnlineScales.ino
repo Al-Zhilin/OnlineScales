@@ -238,28 +238,7 @@ void loop() {
                 
                 String msg = "Калибровка завершена:%0A";
                 if (compensator.isModelLoaded()) {
-                    uint8_t n_params = calibData.modelType + 2;
-                    bool isFirst = true;
-                    for (uint8_t i = 0; i < n_params; i++) {
-                        if (fabs(calibData.params[i]) > 0.000001f) {
-                            if (calibData.params[i] < 0) {
-                                if (isFirst)    msg += "-";
-                                else msg += " - ";
-                            }
-                            else msg += " + ";
-                            isFirst = false;
-
-                            msg += String(fabs(calibData.params[i]), 2);
-                            if (i != n_params-1) {                          // у последнего коэффициента нет переменной = свободный член
-                                msg += "x";
-                                if (n_params-(i+1) > 1) {
-                                    msg += "^";
-                                    msg += n_params-(i+1);
-                                }
-                            }
-                        }
-                    }
-                    if (isFirst) msg += "Все коэффициенты = 0!";
+                    msg += compensator.getPolynomialString(true);
                     msg += "%0AДанные сохранены в память";
                 } else {
                     msg += "Недостаточно данных, модель не сохранена";
@@ -349,7 +328,7 @@ void loop() {
                 modemPayload += "&message=";
                 modemPayload += msg;
 
-                postModemState = SystemState::ERROR_HANDLING;        // Стандартный цикл после отпарвки данных модемом всегда ведет к обработке возможных ошибок
+                postModemState = SystemState::ERROR_HANDLING;        // Стандартный цикл после отправки данных модемом всегда ведет к обработке возможных ошибок
                 sendState_timer = millis();
                 changeFSMState(SystemState::START_MODEM);
                 LOG("Starting Modem states...");

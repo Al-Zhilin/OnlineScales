@@ -385,13 +385,51 @@ class AdaptiveRLS {
     void calcBestModel() {
         float sLin = linearErrorCMA * 1.0f; 
         float sQuad = quadraticErrorCMA * 1.05f;
-        float sCub = cubicErrorCMA * ((delta > 15.0f) ? 1.10f : (sLin + sQuad));
+        float sCub = cubicErrorCMA * 1.10f;
         
         if (sLin <= sQuad && sLin <= sCub) bestModel = 0;
         else if (sQuad <= sCub) bestModel = 1;
         else bestModel = 2;
     }
 
+    String getPolynomialString(bool urlEncoded = false) const {
+        if (!calibData.calibrated) return "0";
+
+        String res = "";
+        uint8_t n_params = calibData.modelType + 2;
+        bool isFirst = true;
+
+        // Определяем символы в зависимости от флага кодировки
+        String space = urlEncoded ? "%20" : " ";
+        String plus  = urlEncoded ? "%2B" : "+";
+        String hat   = urlEncoded ? "%5E" : "^";
+
+        for (uint8_t i = 0; i < n_params; i++) {
+            if (fabs(calibData.params[i]) > 0.000001f) {
+                if (calibData.params[i] < 0) {
+                    if (isFirst) res += "-";
+                    else res += space + "-" + space;
+                } else {
+                    // Плюс ставится ТОЛЬКО если элемент не первый
+                    if (!isFirst) res += space + plus + space;
+                }
+                isFirst = false;
+
+                res += String(fabs(calibData.params[i]), 2);
+                
+                if (i != n_params - 1) { // Если не свободный член
+                    res += "x";
+                    if (n_params - (i + 1) > 1) { // Степень больше 1
+                        res += hat + String(n_params - (i + 1));
+                    }
+                }
+            }
+        }
+        
+        if (isFirst) return "0"; // Если все коэффициенты были нулями
+        return res;
+    }
+    
     uint8_t getBestModel() const { return bestModel; }
     bool isCalibratingMode() const { return isCalibrating; }
     bool isModelLoaded() const { return calibData.calibrated; }
