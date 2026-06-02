@@ -4,11 +4,12 @@
 
 #define STANDART_NOISE 100                         // амплитуда стандартного шума весовых датчиков
 
-struct sensorData {
+struct SensorData {
   float weightGr = 0;
   float weightKg = 0;
   float tempC = 0;
-} sensorData;
+};
+extern SensorData sensorData;
 
 class ScalesManager {
   private:
@@ -38,14 +39,16 @@ class ScalesManager {
     }
 
     ScalesState sensorTare() {
-      if (millis() - _tare_timer < 5000) return ScalesState::ERROR;        
-      _tare_timer = millis();
+      if (millis() - _tare_timer < 5000) return ScalesState::ERROR;
 
       uint32_t wait_available_timer = millis();
-      while (millis() - wait_available_timer < 1000 && !this->isReady()) {}
-      if (millis() - wait_available_timer >= 1000) {    // не дождались готовности
-        return ScalesState::ERROR;
+      while (millis() - wait_available_timer < 1000 && !this->isReady()) {
+        yield();                                          // не блокируем планировщик и WDT
       }
+      if (millis() - wait_available_timer >= 1000) {    // не дождались готовности
+        return ScalesState::ERROR;                        // _tare_timer НЕ обновляем: HX711 завис, повтор доступен сразу
+      }
+      _tare_timer = millis();                             // кулдаун стартует только после подтверждения готовности датчика
 
       _scales->tare();
 
@@ -101,7 +104,7 @@ class ScalesManager {
 class TempManager {
   private:
     GyverDS18Single *_temp_sensor;                        // хранимое отфильтрованное значение
-    uint32_t _start_timer;                                // таймер между между успешными измерениями. Если датчик не готов дольше этого времени - он работает некорректно!!
+    uint32_t _start_timer = 0;                            // таймер между между успешными измерениями. Если датчик не готов дольше этого времени - он работает некорректно!!
     bool first_read = true;
 
   public:
@@ -139,7 +142,7 @@ class TempManager {
 };
 
 // Функция EMA для значения от делителя напряжения батареи (сглаживаем скачки и помехи)
-float filtrateVolts(float new_meas) {
+inline float filtrateVolts(float new_meas) {
   static float filtrated = new_meas;
   float k;
 

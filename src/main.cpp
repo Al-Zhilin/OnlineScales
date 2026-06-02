@@ -1,24 +1,17 @@
+#include <Arduino.h>
+#include <esp_task_wdt.h>
+#include <esp_sleep.h>
 #include "Enumerations.h"
+#include <LittleFS.h>
+#include <FileData.h>
+#include <uButton.h>
+#include "Sensors.h"
+#include "Secrets/Secrets.h"
+#include "Led_UI.h"
+#include "Calibration.h"
+#include "InputHandler.h"
+#include "Sim800LManager.h"
 
-//#define USE_LOG Serial                            // удобный отладчик через Serial (закомментируй эту строку чтобы отключить)
-void logHelper(const __FlashStringHelper* msg, const char* func, const char* file, int line) {          // функция удобного логирования
-    #ifdef USE_LOG
-        USE_LOG.print(F("> "));
-        USE_LOG.print(msg);
-        USE_LOG.print(F(" in "));
-        USE_LOG.print(func);
-        USE_LOG.print(F("() ["));
-        USE_LOG.print(file);
-        USE_LOG.print(F(" : "));
-        USE_LOG.print(line);
-        USE_LOG.println(F("]"));
-    #endif
-}
-#ifdef USE_LOG
-  #define LOG(x) logHelper(F(x), __FUNCTION__, __FILE__, __LINE__)
-#else
-  #define LOG(x)
-#endif
 
 #define REF_WEIGHT 20000.0f                             // калибровочная масса для алгоритма подбора компенсации температурного дрейфа
 
@@ -40,19 +33,10 @@ void logHelper(const __FlashStringHelper* msg, const char* func, const char* fil
 #define R2 100000.0f                                    // Резистор от пина АЦП к земле
 #define DIVIDER_RATIO ((R1 + R2) / R2)                  // Вычисляем коэффициент делителя
 #define SENSOR_ERROR_THRESHOLD 10                       // Сколько ошибочных циклов работы с датчиками должно произойти, чтобы ESP перезагрузилась
-#define DATA_RETRY_PERIOD 5*60*1000UL                   // Интервал повторного вызова длинного цикла при возниконовении проблем с выполнением сетевых операцих
+#define DATA_RETRY_PERIOD (5UL * 60 * 1000)             // Интервал повторного вызова длинного цикла при возниконовении проблем с выполнением сетевых операцих
 
-#include <LittleFS.h>
-#include <FileData.h>
-#include <uButton.h>
-#include "Sensors.h"
-#include "Secrets/Secrets.h"
-#include "Led_UI.h"
-#include "Calibration.h"
-#include "InputHandler.h"
-#include "Sim800LManager.h"
-#include <esp_task_wdt.h>
-#include <esp_sleep.h>
+SensorData sensorData;     // определение глобала, объявленного в Sensors.h
+ModelEEData calibData;     // определение глобала, объявленного в Calibration.h
 
 constexpr uint32_t DATA_SEND_PERIOD = 90*60*1000UL;           // период отправки данных в нормальном режиме работы (первое число - минуты)
 constexpr uint32_t DATA_SEND_PERIOD_CALIB = 30*60*1000UL;     // период отправки данных в нормальном режиме работы, но при калибровке (первое число - минуты), по логике для контроля процесса следует отсылать данные чаще
@@ -71,6 +55,7 @@ uint8_t sensor_error_count = 0;                            // Счетчик п�
 
 
 // --- ПЕРЕМЕННЫЕ, ВЫЖИВАЮЩИЕ ПРИ ПЕРЕЗАГРУЗКЕ И СНЕ (RTC) ---
+RTC_DATA_ATTR uint32_t rtc_magic = 0;              // маркер валидности RTC-памяти: 0 = первый старт или повреждение
 RTC_DATA_ATTR bool is_retry_mode = false;                  // Флаг режима "повтора" после ошибки связи (управляет периодом между длинными циклами главного FSM)
 RTC_DATA_ATTR uint8_t rtc_error_mask = 0;                  // Битовая маска накопленных ошибок
 RTC_DATA_ATTR uint8_t consecutive_errors = 0;              // Счетчик циклов подряд, в которых были ошибки
@@ -100,11 +85,24 @@ void changeFSMState(SystemState newState) {                // функция п�
 }
 
 void setup() {
-    Serial.begin(9600);                                     // чисто для отладки
-    Serial1.begin(9600, SERIAL_8N1, 16, 17);                // поднимаем Serial1 дял работы с модемом на пинах 16 и 17
+    Serial.begin(9600);
+
+    // Проверяем целостность RTC-памяти: при первом включении или повреждении — инициализируем
+    if (rtc_magic != 0xDEADBEEF) {
+        rtc_magic          = 0xDEADBEEF;
+        is_retry_mode      = false;
+        rtc_error_mask     = 0;
+        consecutive_errors = 0;
+        reboot_budget      = 3;
+        rtc_crash_step     = 0;
+        rtc_main_fsm_state = 0;
+    }
+
     inputHanler.begin();
 
     modemPayload.reserve(1024);                             // Избегаем излишних проблем со String: заранее резервируем память
+    serverResponse.reserve(512);
+    analogSetPinAttenuation(BATT_PIN, ADC_11db);            // явная аттенюация: диапазон 0-3600мВ, не полагаемся на умолчание SDK
 
     Config ModemConfig;
     ModemConfig.pwr_pin = MODEM_PWR_PIN;                                // пин управления питанием SIM800L
@@ -117,14 +115,16 @@ void setup() {
     led.begin();
     tempSensor.begin();
 
-    if (!LittleFS.begin(true)) {                         // инициализируем LittleFS (ляжет под капот FileData)
-        LOG("CRITICAL ERROR: SPIFFS Mount Failed!");
+    if (!LittleFS.begin(true)) {
+        Serial.println("CRITICAL: LittleFS mount failed! Rebooting...");
+        delay(1000);
+        ESP.restart();
     }
 
     scales.begin();
     compensator.setDebugOut(&Serial);
     compensator.setNormParams(25.0f, 10.0f);
-    compensator.setVal2Theshold(0.05f);               
+    compensator.setVal2Theshold(0.05f);
     compensator.begin();
 
     restart_reason = (uint8_t)esp_reset_reason();      // причина завешения предыдущей работы. Пока не используется
@@ -155,7 +155,7 @@ void loop() {
     if (inpt.startsWith("Тарировать"))  external_request.tare = true;*/
 
     if (external_request.tare)  changeFSMState(SystemState::TARE_PROCESS);          // по событию вызываем тарирование, оно потом самостоятельно откатит current_state на состояние до вызова
-    
+
     switch (currentState) {
         case SystemState::WAKEUP_SENSORS:                  // пробуждаем hx711, переходим к измерениям
             scales.sleepMode(false);
@@ -165,7 +165,7 @@ void loop() {
             t_state = TempState::BUSY;
             break;
 
-        case SystemState::MEASURE: {                       // измерения температуры и веса                  
+        case SystemState::MEASURE: {                       // измерения температуры и веса
             if (s_state == ScalesState::BUSY) s_state = scales.tick();              // после пробуждения hx711 еще примерно 400мс настраивается и делает первое измерение - проверяем готовность перед чтением, иначе - мусор/старые значения! (Но обязательно с защитой от зависания!!)
             if (t_state == TempState::BUSY) t_state = tempSensor.tick();            // обновляем и температуру, с обработкой готовности и таймаута
 
@@ -187,10 +187,10 @@ void loop() {
                 current_sensor_error = true;
                 rtc_error_mask |= (1 << 1);                // Записываем ошибку HX711 в бит 1
             }
-            
-            if (current_sensor_error) {                                             
+
+            if (current_sensor_error) {
                 sensor_error_count++;
-                
+
                 if (sensor_error_count >= SENSOR_ERROR_THRESHOLD) {
                     changeFSMState(SystemState::ERROR_HANDLING);
                     break;
@@ -216,7 +216,7 @@ void loop() {
                 external_request.start_calibration = false;
                 compensator.startCalibration();
                 LOG("Calibration started");
-                
+
                 String msg = "Переключатель переведен в режим калибровки";
                 modemPayload = "peer_ids=";
                 modemPayload += VK_PEER_ID;
@@ -226,18 +226,18 @@ void loop() {
                 modemPayload += VK_TOKEN;
                 modemPayload += "&message=";
                 modemPayload += msg;
-                
+
                 postModemState = SystemState::ERROR_HANDLING;                           // После отправки в ВК модем вернет нас в сон!
                 changeFSMState(SystemState::START_MODEM);
                 break;
             }
             else if (external_request.end_calibration) {
                 external_request.end_calibration = false;
-                compensator.finishCalibration();
+                bool calib_saved = compensator.finishCalibration();
                 LOG("Калибровка завершена!");
-                
+
                 String msg = "Калибровка завершена:%0A";
-                if (compensator.isModelLoaded()) {
+                if (calib_saved) {
                     msg += compensator.getPolynomialString(true);
                     msg += "%0AДанные сохранены в память";
                 } else {
@@ -252,7 +252,7 @@ void loop() {
                 modemPayload += VK_TOKEN;
                 modemPayload += "&message=";
                 modemPayload += msg;
-                
+
                 postModemState = SystemState::ERROR_HANDLING;
                 changeFSMState(SystemState::START_MODEM);
                 break;
@@ -260,7 +260,7 @@ void loop() {
 
             if (compensator.isCalibratingMode()) compensator.calibrationStep(sensorData.weightGr, sensorData.tempC);
             // выбор: если ранее были проблемы с модемом - попробуем еще раз запустить его по маленькому таймауту, если все было ок - то по стандартному
-            if (millis() - sendState_timer >= (is_retry_mode ? DATA_RETRY_PERIOD : ((compensator.isCalibratingMode()) ? DATA_SEND_PERIOD_CALIB : DATA_SEND_PERIOD)) || external_request.force_send) {               // в данном цикле пришло время/нужно принудительно отправлять данные               
+            if (millis() - sendState_timer >= (is_retry_mode ? DATA_RETRY_PERIOD : ((compensator.isCalibratingMode()) ? DATA_SEND_PERIOD_CALIB : DATA_SEND_PERIOD)) || external_request.force_send) {               // в данном цикле пришло время/нужно принудительно отправлять данные
                 hasModemError = false;
 
                 if (external_request.force_send) {
@@ -277,7 +277,7 @@ void loop() {
                     if (rtc_error_mask & (1 << 4)) compact_errors += "5";       // Был Hard Reset
                 }
 
-                // Формируем текст сообщения (с URL-кодированием переноса строки %0A)   
+                // Формируем текст сообщения (с URL-кодированием переноса строки %0A)
                 String msg = "";
                 msg.reserve(512);
                 msg += "Отчет от весов:%0A";
@@ -324,7 +324,7 @@ void loop() {
                 modemPayload += String(esp_random() & 0x7FFFFFFF);
                 modemPayload += "&v=5.199&access_token=";
                 modemPayload += VK_TOKEN;
-                
+
                 modemPayload += "&message=";
                 modemPayload += msg;
 
@@ -336,7 +336,7 @@ void loop() {
             else {
                 if (rtc_error_mask & 3) led.pushReport(LedModes::REP_SENS_ERR);
                 else led.pushReport(LedModes::REP_SENS_OK);
-                
+
                 changeFSMState(SystemState::SLEEP_SENSORS);
             }
             break;
@@ -345,18 +345,18 @@ void loop() {
         // ------------------- Особая часть цикла работы, вызывается по таймеру -------------------
         case SystemState::START_MODEM:  {
             ModemStatus status = modemManager.processInit();
-            
+
             modem_cycle_completed = true;
             if (status == ModemStatus::BUSY_INIT) { led.setMode(LedModes::BREATH_INIT); break; }
-            if (status == ModemStatus::BUSY) break; 
-            
-            if (status == ModemStatus::SUCCESS || status == ModemStatus::SUCCESS_WITH_RESTARTS) {               
+            if (status == ModemStatus::BUSY) break;
+
+            if (status == ModemStatus::SUCCESS || status == ModemStatus::SUCCESS_WITH_RESTARTS) {
                 LOG("Modem initialized successfully.");
                 changeFSMState(SystemState::DATA_SEND);
-            } else {                                                                                            
+            } else {
                 LOG("Modem initialization failed!");
                 hasModemError = true;
-                rtc_error_mask |= (1 << 2);                     
+                rtc_error_mask |= (1 << 2);
                 changeFSMState(SystemState::SLEEP_MODEM);
             }
             break;
@@ -364,11 +364,11 @@ void loop() {
 
         case SystemState::DATA_SEND:    {
             ModemStatus status = modemManager.processRequest(modemPayload, serverResponse);
-            
+
             if (status == ModemStatus::BUSY_NET) { led.setMode(LedModes::BREATH_NET); break; }
             if (status == ModemStatus::BUSY_HTTP) { led.setMode(LedModes::BREATH_HTTP); break; }
             if (status == ModemStatus::BUSY) break;
-            
+
             if (status == ModemStatus::SUCCESS) {
                 LOG("Data sent successfully!");
             } else {
@@ -384,46 +384,47 @@ void loop() {
 
         case SystemState::SLEEP_MODEM:  {
             ModemStatus status = modemManager.processPowerOff();
-            if (status == ModemStatus::BUSY) break; 
-            
+            if (status == ModemStatus::BUSY) break;
+
             LOG("Modem powered off.");
             if (hasModemError) {
                 changeFSMState(SystemState::ERROR_HANDLING);
             } else {
                 changeFSMState(postModemState);
             }
-            
+
             postModemState = SystemState::SLEEP_SENSORS;
             break;
         }
         // ------------------- Особая часть цикла работы, вызывается по таймеру -------------------
 
-        case SystemState::ERROR_HANDLING: {                 
-            if (rtc_error_mask == 0) {                                    
+        case SystemState::ERROR_HANDLING: {
+            if (rtc_error_mask == 0) {
                 is_retry_mode = false;
                 consecutive_errors = 0;
                 reboot_budget = 3;
                 sensor_error_count = 0;
-            } 
+            }
             else {
                 consecutive_errors++;
 
                 // Логика перезагрузок и таймаутов
                 if (rtc_error_mask & (1 << 2) || rtc_error_mask & (1 << 3) || rtc_error_mask & (1 << 5)) {
-                    if (reboot_budget > 0) {                              
+                    if (reboot_budget > 0) {
                         is_retry_mode = true;
                         LOG("Ошибка связи. Режим повтора по короткому таймауту");
-                    } else {                                              
+                    } else {
                         is_retry_mode = false;
                         LOG("Бюджет перезегрузок исчерпан. Ждем чуда по стандартному таймауту");
                     }
                 }
-                
+
                 if (sensor_error_count >= SENSOR_ERROR_THRESHOLD) {
                     if (reboot_budget > 0) {
                         LOG("Датчики лежат больше допустимого периода. Аппаратный сброс...");
                         reboot_budget--;
-                        rtc_error_mask |= (1 << 4);         
+                        rtc_error_mask |= (1 << 4);
+                        esp_task_wdt_reset();
                         delay(500);
                         ESP.restart();
                     }
@@ -434,7 +435,8 @@ void loop() {
 
                 if (consecutive_errors % 3 == 0 && reboot_budget > 0) {
                     reboot_budget--;
-                    rtc_error_mask |= (1 << 4);                           
+                    rtc_error_mask |= (1 << 4);
+                    esp_task_wdt_reset();
                     delay(100);
                     ESP.restart();
                 }
@@ -448,27 +450,41 @@ void loop() {
                 else if (rtc_error_mask & (1 << 3)) led.pushReport(LedModes::REP_MOD_ERR_NET);
                 else if (rtc_error_mask & (1 << 2)) led.pushReport(LedModes::REP_MOD_ERR_HW);
                 else                                led.pushReport(LedModes::REP_MOD_OK);
-                
+
                 modem_cycle_completed = false; // Сбрасываем для следующего прохода
             }
 
             rtc_error_mask = 0;
             changeFSMState(SystemState::SLEEP_SENSORS);
-            postModemState = SystemState::SLEEP_SENSORS; 
+            postModemState = SystemState::SLEEP_SENSORS;
             break;
         }
 
         case SystemState::SLEEP_SENSORS:
             if (!led.tick()) break;
             led.powerOff();
-            
-            scales.sleepMode(true);
-            esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);         
-            gpio_wakeup_enable((gpio_num_t)BUTT_PIN, GPIO_INTR_LOW_LEVEL);
-            gpio_wakeup_enable((gpio_num_t)CALIB_SWITCH_PIN, GPIO_INTR_LOW_LEVEL);
-            esp_sleep_enable_gpio_wakeup();
 
-            esp_task_wdt_delete(NULL);                          
+            scales.sleepMode(true);
+            esp_sleep_enable_timer_wakeup(SLEEP_TIME_SEC * 1000000ULL);
+
+            // Сбрасываем GPIO wakeup и перенастраиваем с нуля каждый цикл.
+            // Регистрируем пин ТОЛЬКО если он HIGH: пин в LOW-уровне при входе в sleep
+            // вызовет немедленное пробуждение и бесконечный busy-loop с разрядкой батареи.
+            esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+            {
+                bool any_gpio = false;
+                if (digitalRead(BUTT_PIN)) {
+                    gpio_wakeup_enable((gpio_num_t)BUTT_PIN, GPIO_INTR_LOW_LEVEL);
+                    any_gpio = true;
+                }
+                if (digitalRead(CALIB_SWITCH_PIN)) {
+                    gpio_wakeup_enable((gpio_num_t)CALIB_SWITCH_PIN, GPIO_INTR_LOW_LEVEL);
+                    any_gpio = true;
+                }
+                if (any_gpio) esp_sleep_enable_gpio_wakeup();
+            }
+
+            esp_task_wdt_delete(NULL);
             esp_light_sleep_start();
             esp_task_wdt_add(NULL);
 
@@ -476,20 +492,20 @@ void loop() {
             break;
 
         case SystemState::TARE_PROCESS:
-        {   
+        {
             external_request.tare = false;
             ScalesState tare_state = scales.sensorTare();
 
             if (tare_state == ScalesState::SUCCESS)      led.pushReport(LedModes::ACT_TARE_OK);
             else if (tare_state == ScalesState::ERROR)   led.pushReport(LedModes::ACT_TARE_ERR);
 
-            changeFSMState(SystemState::PREV_STATE);                                                
+            changeFSMState(SystemState::PREV_STATE);
             break;
         }
-        
-        case SystemState::PREV_STATE:                 
+
+        case SystemState::PREV_STATE:
             break;
     }
 
-    vTaskDelay(10 / portTICK_PERIOD_MS);              
+    vTaskDelay(10 / portTICK_PERIOD_MS);
 }

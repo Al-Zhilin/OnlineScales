@@ -1,4 +1,5 @@
 #pragma once
+#include "debug.h"
 
 enum class SystemState : uint8_t {                   // состояния конечного автомата (главного цикла loop())
     SLEEP_SENSORS,                          // усыпляем temp и weight датчики
@@ -37,8 +38,8 @@ enum class LedModes : uint8_t {
 };
 
 enum class ModemStatus : uint8_t {
-    IDLE, 
-    BUSY, BUSY_INIT, BUSY_NET, BUSY_HTTP, 
+    IDLE,
+    BUSY, BUSY_INIT, BUSY_NET, BUSY_HTTP,
     SUCCESS, SUCCESS_WITH_RESTARTS,
     ERR_NO_SIM, ERR_BOOT_TIMEOUT, ERR_PPP_TIMEOUT, ERR_SERVER_CONNECT, ERR_HTTP_TIMEOUT
 };

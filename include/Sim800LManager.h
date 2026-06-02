@@ -4,6 +4,7 @@
 #include <NetworkClientSecure.h>
 #include <HTTPClient.h>
 #include <PPP.h>
+#include "Enumerations.h"
 
 // --- Унифицированные настройки (constexpr) ---
 namespace ModemCfg {

@@ -141,7 +141,7 @@ public:
                 uint8_t b = (uint8_t)_color;
                 
                 float scale = 0.05f + (wave * 0.35f); 
-                _setPixel(r * scale, g * scale, b * scale);
+                _setPixel((uint8_t)(r * scale), (uint8_t)(g * scale), (uint8_t)(b * scale));
             }
             return false; 
         }

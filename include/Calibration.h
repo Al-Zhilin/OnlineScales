@@ -6,12 +6,13 @@
 #include <type_traits>
 
 struct ModelEEData {
-        uint8_t modelType = 0;            
-        float params[4] = {0, 0, 0, 0};   
-        bool calibrated = false;          
+        uint8_t modelType = 0;
+        float params[4] = {0, 0, 0, 0};
+        bool calibrated = false;
         float minCalibVal2 = 0.0f;
         float maxCalibVal2 = 0.0f;
-    } calibData;
+    };
+extern ModelEEData calibData;
 
 template <uint16_t N, typename T = double>
 class RLSModel {
@@ -125,12 +126,16 @@ class AdaptiveRLS {
     float min_val2 = 999.0f, max_val2 = -999.0f;
     float delta = 0.0f;
     float _minVal2Theshold = 0.5;               // минимальный шаг опорного параметра, если в calibrationStep передано меньшее значение - оно будет проигнорировано
+    float _lastVal2 = -999.0f;                  // предыдущее значение val2 — вынесено из static в метод, чтобы сбрасываться при startCalibration()
 
     float _normZero = 0;
     float _normScale = 0;
 
     // нормировка val2 величины относительно нового нуля и разрешения
-    float normVal2(float val2) const { return (val2 - _normZero) / _normScale;}
+    float normVal2(float val2) const {
+        if (_normScale == 0.0f) return 0.0f;
+        return (val2 - _normZero) / _normScale;
+    }
 
 
     Print* _debugOut = nullptr;                 // абстрактная основа любого потока вывода
@@ -184,10 +189,7 @@ class AdaptiveRLS {
     }
 
     void startCalibration() {
-      if (isCalibrating) {
-        debugPrintF(F("Калбировка уже была проведена, сбрасываю параметры перед началом новой..."));
-        resetCalibrationModels();
-      }
+      resetCalibrationModels();
 
       max_val2 = -999.0f;
       min_val2 = 999.0f;
@@ -195,13 +197,14 @@ class AdaptiveRLS {
       
       isCalibrating = true;
       samplesCount = 0;
+      _lastVal2 = -999.0f;
       linearErrorCMA = quadraticErrorCMA = cubicErrorCMA = 0.0f;
     }
 
-    void finishCalibration() {
+    bool finishCalibration() {
       if (!isCalibrating) {
         debugPrintF(F("Калбировка не была начата!"));
-        return;
+        return false;
       }
 
       isCalibrating = false;
@@ -210,18 +213,19 @@ class AdaptiveRLS {
       if (samplesCount <= 10) {
         debugPrintF(F("Калибровочная модель не сохранена. Слишком мало данных"));
         resetCalibrationModels();
-        return;
+        return false;
       }
 
       // Защита 2: Недостаточный температурный диапазон
       if (delta < 5.0f) {
         debugPrintF(F("Калибровочная модель не сохранена. Использован слишком малый диапазон val2"));
         resetCalibrationModels();
-        return;
+        return false;
       }
-      
+
       calcBestModel();
       saveData();
+      return true;
     }
 
     void resetCalibrationModels() {     // Отдельный метод для сброса только математики (без EEPROM)
@@ -314,7 +318,6 @@ class AdaptiveRLS {
       max_val2 = max(max_val2, val2);
       delta = max_val2 - min_val2;
       
-      static float _lastVal2 = -999.0f;
       if (fabs(val2 - _lastVal2) < _minVal2Theshold)    return;
       _lastVal2 = val2;
       samplesCount++;
@@ -374,7 +377,6 @@ class AdaptiveRLS {
       // Метод Горнера для быстрого вычисления полинома
       // p = { a, b, c, d } соответствует a*t^3 + b*t^2 + c*t + d
       est = p[0];
-      Serial.print(p[0] + String(" "));
       for (int i = 1; i < bestModel + 2; i++) {
         est = est * t + p[i];
       }

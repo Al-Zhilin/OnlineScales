@@ -1,0 +1,3 @@
+{
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/.pio/build/esp32-s3-devkitc1-n8r2/compile_commands.json"
+}

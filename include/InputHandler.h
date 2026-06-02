@@ -1,3 +1,4 @@
+#pragma once
 #include "Enumerations.h"
 
 class InputHandler {
@@ -17,11 +18,12 @@ class InputHandler {
       pinMode(switch_pins, INPUT_PULLUP);
       butt = new uButton(butt_pin);
       if (switch_state = !digitalRead(switch_pins)) {        // начальное положение переключателя режима работы
-        compensator.startCalibration();
+        external_request.start_calibration = true;          // обрабатывается в MEASURE после compensator.begin()
       }
     }
 
     void tick() {
+      if (butt == nullptr) return;
       butt->tick();
       bool switch_val = !digitalRead(switch_pins);     // ручное чтение состояний переключателя. true - вкл режим калибровки
 
