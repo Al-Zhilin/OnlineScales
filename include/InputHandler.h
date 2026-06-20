@@ -1,5 +1,6 @@
 #pragma once
 #include "Enumerations.h"
+#include "Calibration.h"
 
 class InputHandler {
   private:
@@ -7,12 +8,12 @@ class InputHandler {
     uint8_t switch_pins, butt_pin;
     bool switch_state = false;                        // храним предыдущее состояние переключателей
     uint32_t _switch_timer = millis();                 // таймер для игнорирования возможного дребезга
-    AdaptiveRLS<double>& compensator;
+    AdaptiveRLS<double, true, 2>& compensator;
     ModificationRequests& external_request;
     SystemState& current_state;
 
   public:
-    InputHandler(uint8_t button, uint8_t sw1_pin, AdaptiveRLS<double>& cal, ModificationRequests& ext, SystemState& curr_state) : switch_pins(sw1_pin), butt_pin(button), compensator(cal), external_request(ext), current_state(curr_state) {}
+    InputHandler(uint8_t button, uint8_t sw1_pin, AdaptiveRLS<double, true, 2>& cal, ModificationRequests& ext, SystemState& curr_state) : switch_pins(sw1_pin), butt_pin(button), compensator(cal), external_request(ext), current_state(curr_state) {}
 
     void begin() {
       pinMode(switch_pins, INPUT_PULLUP);
