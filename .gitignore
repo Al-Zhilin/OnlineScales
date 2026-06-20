@@ -5,3 +5,6 @@ test/
 .vscode/launch.json
 .theia/
 .claude/
+include/web_assets.h
+OnlineScales.code-workspace
+Ypravlenie.code-workspace

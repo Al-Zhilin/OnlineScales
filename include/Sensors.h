@@ -2,8 +2,6 @@
 #include <GyverHX711.h>
 #include <GyverDS18.h>
 
-#define STANDART_NOISE 100                         // амплитуда стандартного шума весовых датчиков
-
 struct SensorData {
   float weightGr = 0;
   float weightKg = 0;
@@ -39,7 +37,10 @@ class ScalesManager {
     }
 
     ScalesState sensorTare() {
-      if (millis() - _tare_timer < 5000) return ScalesState::ERROR;
+      if (millis() - _tare_timer < 5000) {
+        LOG("Tare rejected: cooldown active");
+        return ScalesState::ERROR;
+      }
 
       uint32_t wait_available_timer = millis();
       while (millis() - wait_available_timer < 1000 && !this->isReady()) {
@@ -52,17 +53,19 @@ class ScalesManager {
 
       _scales->tare();
 
-      if (abs(_scales->read()) <= STANDART_NOISE) {                   
-        _offset = _scales->getOffset();                   
-        
-        EEOffset.updateNow();                             
-        
+      // Ждём свежего отсчёта после тарирования, иначе read() вернёт устаревшее значение
+      uint32_t verify_timer = millis();
+      while (!_scales->available() && millis() - verify_timer < 500) yield();
+
+      if (abs(_scales->read()) <= STANDART_NOISE) {
+        _offset = _scales->getOffset();
+        EEOffset.updateNow();
         LOG("New weight offset saved to LittleFS");
         return ScalesState::SUCCESS;
       }
       else {
         LOG("Uncorrect tare!");
-        _scales->setOffset(_offset);                      
+        _scales->setOffset(_offset);
         return ScalesState::ERROR;
       }
     }
@@ -88,6 +91,7 @@ class ScalesManager {
 
       float k;
       int32_t new_weight = _scales->read();
+      if (INVERT_WEIGHT_SIGN)   new_weight *= -1;
       static float _filtered = new_weight;                          // при первом чтении (создании для static мгновенно подхватит актуальное значение, фильтру не придется долго догонять от нуля до new_weight)
 
       if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;     
@@ -97,6 +101,8 @@ class ScalesManager {
       sensorData.weightGr = (float)_filtered / _calibation_factor;  // обновили данные: попугаи -> вес в граммах
       sensorData.weightKg = sensorData.weightGr / 1000;             // еще и вес в кг тоже обновили
 
+      //Serial.print("Koeff: ");
+      //Serial.println(new_weight / 20000.0, 4);       // 8.420 8.0235 7.8050 7.3890 --- 7.60 7.89 7.47
       return ScalesState::SUCCESS;
     }
 };

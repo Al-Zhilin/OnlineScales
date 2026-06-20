@@ -53,6 +53,10 @@ private:
             case LedModes::BREATH_INIT: _color = 0x0000FF; break;
             case LedModes::BREATH_NET:  _color = 0xFF9600; break;
             case LedModes::BREATH_HTTP: _color = 0xFF00FF; break;
+            case LedModes::BREATH_WIFI_AP: _color = 0xFFCC00; break;
+            case LedModes::BREATH_WIFI_CONN: _color = 0x00CC44; break;
+            case LedModes::ACT_WIFI_OK: _color = 0x00FF00; _targetBlinks = 2; _interval = 300; break;
+            case LedModes::ACT_WIFI_FAIL: _color = 0xFF0000; _targetBlinks = 3; _interval = 100; break;
             case LedModes::REP_SENS_OK:  _color = 0x00FF00; _targetBlinks = 1; _interval = 500; break;
             case LedModes::REP_SENS_ERR: _color = 0xFF0000; _targetBlinks = 1; _interval = 500; break;
             case LedModes::REP_MOD_OK:       _color = 0x00FF00; _targetBlinks = 2; _interval = 150; break;

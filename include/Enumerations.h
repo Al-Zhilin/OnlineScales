@@ -31,6 +31,8 @@ struct ModificationRequests {
 enum class LedModes : uint8_t {
     NONE,
     BREATH_INIT, BREATH_NET, BREATH_HTTP,                                         // Дыхане: инициализация модема, настройка сети, https запрос
+    BREATH_WIFI_AP, BREATH_WIFI_CONN,                                             // Дыхание: ожидание в режиме AP, подключение к WiFi
+    ACT_WIFI_OK, ACT_WIFI_FAIL,                                                   // Отчет от WiFi: успех/неуспех подключения к сети
     REP_SENS_OK, REP_SENS_ERR,                                                    // Отчеты Датчиков: успех/ошибка
     REP_MOD_OK, REP_MOD_ERR_HW, REP_MOD_ERR_NET, REP_MOD_ERR_SERV,                // Отчеты Модема: успех, ошибка hardware, ошибка настройки сети, ошибка https запроса или соединения с сервером
     ACT_TARE_OK, ACT_TARE_ERR,                                                    // Action тарирование: успех/ошибка
