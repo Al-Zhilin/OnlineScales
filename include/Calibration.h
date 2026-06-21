@@ -87,10 +87,12 @@ public:
     const float* getTheta() const { return theta; }
 
     // Returns 100% before any data; shrinks as P converges toward 0.
+    // Capped at 100%: _tryReproject() can momentarily inflate P above the initial scale.
     float getUncertainty() const {
         T trace = T(0);
         for (uint16_t i = 0; i < N; i++) trace += P[i][i];
-        return float(trace / (T(N) * T(_p0Scale))) * 100.0f;
+        float u = float(trace / (T(N) * T(_p0Scale))) * 100.0f;
+        return (u > 100.0f) ? 100.0f : u;
     }
 
     // 2-argument update: feature vector x[N], target y
@@ -154,6 +156,7 @@ public:
 
     // Point-wise predictive variance: (x^T P x) / (p0Scale * ||x||^2) * 100 %.
     // At calibration start = 100 %; shrinks to 0 % as the model converges at x.
+    // Capped at 100% for the same reason as getUncertainty().
     float getUncertaintyAt(const float* x) const {
         T xPx = T(0), norm2 = T(0);
         for (uint16_t i = 0; i < N; i++) {
@@ -163,7 +166,8 @@ public:
             norm2 += T(x[i]) * T(x[i]);
         }
         if (norm2 < T(1e-20)) return 0.0f;
-        return float(xPx / (T(_p0Scale) * norm2)) * 100.0f;
+        float u = float(xPx / (T(_p0Scale) * norm2)) * 100.0f;
+        return (u > 100.0f) ? 100.0f : u;
     }
 
     // Apply coordinate change P = M^T * P * M  (x_old = M * x_new)
@@ -984,6 +988,8 @@ public:
 
 #if CALIB_STORAGE != CALIB_STORAGE_MANUAL
     // Returns de-normalised polynomial string for display (e.g. VK messages).
+    // EMA coefficients (theta[1..numParams-2] for EMA models) are not shown;
+    // only the pure polynomial terms (slope/curvature and bias) are displayed.
     // urlEncoded=true escapes '+' as '%2B' for safe URL form encoding.
     String getPolynomialString(bool urlEncoded = false) const {
         if (!_calibData.calibrated)
@@ -993,30 +999,32 @@ public:
         float Z = _normZero;
         float S = (_normScale > 1e-4f) ? _normScale : 1.0f;
         uint8_t type = _calibData.modelType;
+        // Bias is always stored at the last saved parameter index.
+        float bias = p[_calibData.numParams - 1];
 
         char buf[100] = {};
         if (type == 0) {
-            // y = (p0/S)*t + (p1 - p0*Z/S)
+            // y = (p[0]/S)*t + (bias - p[0]*Z/S)
             float A = p[0] / S;
-            float B = p[1] - p[0]*Z / S;
+            float B = bias - p[0]*Z / S;
             snprintf(buf, sizeof(buf), "%.4ft%c%.4f",
                      A, (B >= 0.0f ? '+' : '-'), fabsf(B));
         } else if (type == 1) {
-            // y = (p0/S^2)*t^2 + (p1/S - 2*p0*Z/S^2)*t + (p2 - p1*Z/S + p0*Z^2/S^2)
+            // y = (p[0]/S^2)*t^2 + (p[1]/S - 2*p[0]*Z/S^2)*t + (bias - p[1]*Z/S + p[0]*Z^2/S^2)
             float A =  p[0] / (S*S);
             float B =  p[1]/S - 2.0f*p[0]*Z/(S*S);
-            float C =  p[2] - p[1]*Z/S + p[0]*Z*Z/(S*S);
+            float C =  bias - p[1]*Z/S + p[0]*Z*Z/(S*S);
             snprintf(buf, sizeof(buf), "%.4ft^2%c%.4ft%c%.4f",
                      A,
                      (B >= 0.0f ? '+' : '-'), fabsf(B),
                      (C >= 0.0f ? '+' : '-'), fabsf(C));
         } else {
-            // Cubic: show normalised-space form (t' = (t-Z)/S)
+            // Cubic: normalised-space form (t' = (t-Z)/S); bias at last param index.
             snprintf(buf, sizeof(buf), "%.3ft'^3%c%.3ft'^2%c%.3ft'%c%.3f",
                      p[0],
                      (p[1]>=0.0f?'+':'-'), fabsf(p[1]),
                      (p[2]>=0.0f?'+':'-'), fabsf(p[2]),
-                     (p[3]>=0.0f?'+':'-'), fabsf(p[3]));
+                     (bias >=0.0f?'+':'-'), fabsf(bias));
         }
 
         String s(buf);
