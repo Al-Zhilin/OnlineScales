@@ -28,11 +28,11 @@
 //  Persistent calibration data  (stored in flash / EEPROM)
 // ──────────────────────────────────────────────────────────────────────────────
 struct ModelEEData {
-    uint8_t  version          = 1;       // format version; increment when layout changes
+    uint8_t  version          = 2;       // format version; increment when layout changes
     uint8_t  modelType        = 0;       // 0=linear  1=quadratic  2=cubic
-    uint8_t  numParams        = 0;       // modelType + 2  (2/3/4)
+    uint8_t  numParams        = 0;       // actual theta length for bestModel (LN/QN/CN, capped at 6)
     bool     calibrated       = false;
-    float    params[4]        = {};      // theta in normalised coordinates
+    float    params[6]        = {};      // theta in normalised coordinates (up to 6 for EMA models)
     float    minCalibVal2     = 0.0f;
     float    maxCalibVal2     = 0.0f;
     float    savedUncertainty = 100.0f; // P-uncertainty at finishCalibration(); restored after load
@@ -69,6 +69,15 @@ public:
 
     void setLambda(T lam) { _lambda = (lam > T(0)) ? lam : T(1); }
     void setPfloor(T pf)  { _pfloor = pf; }
+
+    // Multiply every element of P by factor; diagonal elements are capped at diagonalCeiling.
+    void scaleP(float factor, float diagonalCeiling = 100000.0f) {
+        for (uint16_t i = 0; i < N; i++)
+            for (uint16_t j = 0; j < N; j++)
+                P[i][j] *= T(factor);
+        for (uint16_t i = 0; i < N; i++)
+            if (P[i][i] > T(diagonalCeiling)) P[i][i] = T(diagonalCeiling);
+    }
 
     void setTheta(const float* src) {
         if (!src) return;
@@ -126,11 +135,12 @@ public:
                 P[i][j] = P[j][i] = (P[i][j] + P[j][i]) * T(0.5);
 
         if (float(trace) > 1e6f || isnan(float(trace))) {
-            // Overflow: reset P and theta (both numerically suspect)
+            // Overflow: reset P and theta (both numerically suspect).
+            // Restore P to p0Scale*I so uncertainty returns to 100% and learning resumes.
             for (uint16_t ii = 0; ii < N; ii++) {
                 theta[ii] = 0.0f;
                 for (uint16_t jj = 0; jj < N; jj++)
-                    P[ii][jj] = (ii == jj) ? T(100.0f) : T(0);
+                    P[ii][jj] = (ii == jj) ? T(_p0Scale) : T(0);
             }
         }
     }
@@ -236,6 +246,10 @@ private:
     // ── Post-calibration state ───────────────────────────────────────────────
     float _savedUncertainty = 100.0f; // stored at finishCalibration(); returned when _isLoaded
     bool  _isLoaded         = false;  // set by _loadData(); cleared by startCalibration()
+
+    // ── Auto-boost during calibration ────────────────────────────────────────
+    float _driftThreshold   = 0.0f;    // 0 = disabled; max acceptable residual in rawVal1 units
+    float _driftBoostFactor = 100.0f;  // P multiplier applied when residual exceeds threshold
 
     // ── Debug ────────────────────────────────────────────────────────────────
     Print* _debugOut = nullptr;
@@ -414,17 +428,38 @@ private:
     void _calcBestModel() {
         float sL = linearErrorCMA;
         float sQ = quadraticErrorCMA * _penaltyQuad;
-        float sC = cubicErrorCMA     * _penaltyCubic;
-        if      (sL <= sQ && sL <= sC) bestModel = 0;
-        else if (sQ <= sC)             bestModel = 1;
-        else                           bestModel = 2;
+        float sC = cubicErrorCMA * _penaltyCubic;
+        if (sL <= sQ && sL <= sC) bestModel = 0;
+        else if (sQ <= sC)  bestModel = 1;
+        else bestModel = 2;
+    }
+
+    // Best live model index at any point: CMA-guided during calibration (after warmup),
+    // linear during warmup (CMA not yet valid), bestModel after finishCalibration().
+    uint8_t _liveModelType() const {
+        if (isCalibrating) {
+            if (samplesCount <= _cmaWarmup) return 0;  // warmup: CMA not yet valid, use linear
+            float sL = linearErrorCMA;
+            float sQ = quadraticErrorCMA * _penaltyQuad;
+            float sC = cubicErrorCMA * _penaltyCubic;
+            if (sL <= sQ && sL <= sC) return 0;
+            if (sQ <= sC)   return 1;
+            return 2;
+        }
+        return bestModel;
     }
 
     bool _loadData() {
-        if (_calibData.version != 1)                               return false;
-        if (!_calibData.calibrated)                                return false;
-        if (_calibData.numParams < 2 || _calibData.numParams > 4)  return false;
-        if (_calibData.numParams != _calibData.modelType + 2)      return false;
+        if (_calibData.version != 2)    return false;
+        if (!_calibData.calibrated) return false;
+        if (_calibData.numParams < 2 || _calibData.numParams > 6)  return false;
+        // numParams must match the actual theta length for the stored model type
+        uint8_t expectedParams;
+        if      (_calibData.modelType == 0) expectedParams = uint8_t(LN < 7 ? LN : 6);
+        else if (_calibData.modelType == 1) expectedParams = uint8_t(QN < 7 ? QN : 6);
+        else if (_calibData.modelType == 2) expectedParams = uint8_t(CN < 7 ? CN : 6);
+        else return false;
+        if (_calibData.numParams != expectedParams) return false;
         for (uint8_t i = 0; i < _calibData.numParams; i++)
             if (isnan(_calibData.params[i]) || isinf(_calibData.params[i])) return false;
 
@@ -486,8 +521,10 @@ public:
     void setMinSamples(uint32_t n) {
         _minSamples = n;
         // Invariant: at least 1 sample must contribute to CMA after warmup.
-        if (_cmaWarmup >= _minSamples && _minSamples > 0)
-            _cmaWarmup = (uint8_t)(_minSamples - 1);
+        if (_cmaWarmup >= _minSamples && _minSamples > 0) {
+            uint32_t w = _minSamples - 1;
+            _cmaWarmup = (w > 255u) ? uint8_t(255) : uint8_t(w);
+        }
     }
 
     void setCmaWarmup(uint8_t n) {
@@ -523,6 +560,37 @@ public:
         linearModel.setPfloor(t);
         quadraticModel.setPfloor(t);
         cubicModel.setPfloor(t);
+    }
+
+    // Set minimum uncertainty floor in human-readable percent (0..100).
+    // Converts: pfloor = (pct / 100) * p0Scale = pct * 1000  (p0Scale is always 100000).
+    // Example: setPfloorPercent(0.01f) → floor at 0.01% → Kalman gain ≈ 10 after convergence.
+    void setPfloorPercent(float pct) {
+        setPfloor((pct / 100.0f) * 100000.0f);
+    }
+
+    // Returns the current pfloor as percentage of the uncertainty scale.
+    float getPfloorPercent() const {
+        return (_pfloor / 100000.0f) * 100.0f;
+    }
+
+    // Multiply P of all models by factor (diagonal capped at p0Scale = 100000).
+    // Use to manually open up uncertainty when the model is known to be outdated.
+    void boostP(float factor) {
+        linearModel.scaleP(factor, 100000.0f);
+        quadraticModel.scaleP(factor, 100000.0f);
+        cubicModel.scaleP(factor, 100000.0f);
+    }
+
+    // Enable auto-boost during calibrationStep():
+    // if the leading model's pre-update residual exceeds threshold (rawVal1 units),
+    // P is multiplied by boostFactor before the update so the Kalman gain grows
+    // and the current sample is absorbed more aggressively.
+    // Diagonal ceiling = p0Scale (100000) prevents P from exceeding initial uncertainty.
+    // Set threshold = 0 to disable (default).
+    void setDriftBoost(float threshold, float boostFactor) {
+        _driftThreshold   = threshold;
+        _driftBoostFactor = boostFactor;
     }
 
     // Accepts only valid EMA alphas strictly in (0, 1).
@@ -577,8 +645,10 @@ public:
         }
 
         // Guard: ensure at least 1 sample contributes to CMA.
-        if (_minSamples > 0 && _cmaWarmup >= _minSamples)
-            _cmaWarmup = (uint8_t)(_minSamples - 1);
+        if (_minSamples > 0 && _cmaWarmup >= _minSamples) {
+            uint32_t w = _minSamples - 1;
+            _cmaWarmup = (w > 255u) ? uint8_t(255) : uint8_t(w);
+        }
     }
 
     void calibrationStep(float val1, float val2) {
@@ -605,6 +675,15 @@ public:
         float eLin  = fabsf(float(error) - float(linearModel.predict(xL)));
         float eQuad = fabsf(float(error) - float(quadraticModel.predict(xQ)));
         float eCub  = fabsf(float(error) - float(cubicModel.predict(xC)));
+
+        // Auto-boost: if the current CMA-best model's residual exceeds the threshold,
+        // inflate P before this update so the Kalman gain grows and the model adapts faster.
+        // boostP() caps diagonal at p0Scale (100000) so P never exceeds initial uncertainty.
+        if (_driftThreshold > 0.0f && samplesCount > _cmaWarmup) {
+            uint8_t m = _liveModelType();
+            float leadErr = (m == 0) ? eLin : (m == 1) ? eQuad : eCub;
+            if (leadErr > _driftThreshold) boostP(_driftBoostFactor);
+        }
 
         linearModel.update(xL, error);
         quadraticModel.update(xQ, error);
@@ -636,7 +715,10 @@ public:
 
         _calibData.calibrated   = true;
         _calibData.modelType    = bestModel;
-        _calibData.numParams    = bestModel + 2;
+        // Save the full theta vector; cap at 6 to stay within params[6].
+        uint8_t nSave = (bestModel == 0) ? uint8_t(LN) : (bestModel == 1) ? uint8_t(QN) : uint8_t(CN);
+        if (nSave > 6) nSave = 6;
+        _calibData.numParams    = nSave;
         _calibData.minCalibVal2 = min_val2;
         _calibData.maxCalibVal2 = max_val2;
 
@@ -672,8 +754,8 @@ public:
         const float* src = (bestModel == 0) ? linearModel.getTheta()
                          : (bestModel == 1) ? quadraticModel.getTheta()
                                             : cubicModel.getTheta();
-        for (uint8_t i = 0; i < 4; i++)
-            _calibData.params[i] = (i < _calibData.numParams) ? src[i] : 0.0f;
+        for (uint8_t i = 0; i < 6; i++)
+            _calibData.params[i] = (i < nSave) ? src[i] : 0.0f;
         _calibData.savedUncertainty = _savedUncertainty;
 
 #if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
@@ -688,32 +770,60 @@ public:
     // ──────────────────────────── compensation ───────────────────────────────
 
     // Live compensation — also advances EMA state (correct for real-time use).
+    // During calibration: uses the CMA-best live model (linear during warmup).
+    // After finishCalibration() / load: uses the stored bestModel.
     float compensate(float rawVal1, float val2) {
         if (isnan(val2) || isinf(val2)) return rawVal1;
-        if (!_calibData.calibrated)     return rawVal1;
+
+        if (isCalibrating) {
+            if (samplesCount == 0) return rawVal1;
+            float t = normVal2(val2);
+            _updateEmas(t);
+            float xL[LN], xQ[QN], xC[CN];
+            _buildFeatures(t, xL, xQ, xC);
+            uint8_t m = _liveModelType();
+            T pred = (m == 0) ? linearModel.predict(xL)
+                   : (m == 1) ? quadraticModel.predict(xQ)
+                              : cubicModel.predict(xC);
+            return float(T(rawVal1) - pred);
+        }
+
+        if (!_calibData.calibrated) return rawVal1;
 
         float t = normVal2(val2);
         _updateEmas(t);
-
         float xL[LN], xQ[QN], xC[CN];
         _buildFeatures(t, xL, xQ, xC);
-
         T pred = (bestModel == 0) ? linearModel.predict(xL)
                : (bestModel == 1) ? quadraticModel.predict(xQ)
                                   : cubicModel.predict(xC);
-        return float(T(rawVal1) - pred);  // full-precision subtraction
+
+        return float(T(rawVal1) - pred);
     }
 
     // Read-only compensation — uses current EMA snapshot without advancing it.
     // Useful for probing the model at a hypothetical val2 without side-effects.
+    // During calibration: same live-model selection as compensate().
     float getCompensation(float rawVal1, float val2) const {
         if (isnan(val2) || isinf(val2)) return rawVal1;
-        if (!_calibData.calibrated)     return rawVal1;
+
+        if (isCalibrating) {
+            if (samplesCount == 0) return rawVal1;
+            float t = normVal2(val2);
+            float xL[LN], xQ[QN], xC[CN];
+            _buildFeatures(t, xL, xQ, xC);
+            uint8_t m = _liveModelType();
+            T pred = (m == 0) ? linearModel.predict(xL)
+                   : (m == 1) ? quadraticModel.predict(xQ)
+                              : cubicModel.predict(xC);
+            return float(T(rawVal1) - pred);
+        }
+
+        if (!_calibData.calibrated) return rawVal1;
 
         float t = normVal2(val2);
         float xL[LN], xQ[QN], xC[CN];
         _buildFeatures(t, xL, xQ, xC);
-
         T pred = (bestModel == 0) ? linearModel.predict(xL)
                : (bestModel == 1) ? quadraticModel.predict(xQ)
                                   : cubicModel.predict(xC);
@@ -753,19 +863,10 @@ public:
 
     float getUncertainty() const {
         if (_isLoaded) return _savedUncertainty;
-        if (isCalibrating && samplesCount > _cmaWarmup) {
-            // During active calibration: show uncertainty of the currently leading model
-            // (CMA determines current winner; bestModel is updated only at finishCalibration).
-            float sL = linearErrorCMA;
-            float sQ = quadraticErrorCMA * _penaltyQuad;
-            float sC = cubicErrorCMA     * _penaltyCubic;
-            if (sL <= sQ && sL <= sC) return linearModel.getUncertainty();
-            if (sQ <= sC)             return quadraticModel.getUncertainty();
-            return                           cubicModel.getUncertainty();
-        }
-        if (bestModel == 0) return linearModel.getUncertainty();
-        if (bestModel == 1) return quadraticModel.getUncertainty();
-        return                     cubicModel.getUncertainty();
+        uint8_t m = _liveModelType();
+        if (m == 0) return linearModel.getUncertainty();
+        if (m == 1) return quadraticModel.getUncertainty();
+        return           cubicModel.getUncertainty();
     }
 
     // Point-wise predictive uncertainty at an arbitrary val2 using the current best model.
@@ -813,9 +914,11 @@ public:
                                             : cubicModel.getTheta();
         bestModel = modelType;
         _calibData.modelType = modelType;
-        _calibData.numParams = modelType + 2;
-        for (uint8_t i = 0; i < 4; i++)
-            _calibData.params[i] = (i < _calibData.numParams) ? src[i] : 0.0f;
+        uint8_t nSave = (modelType == 0) ? uint8_t(LN) : (modelType == 1) ? uint8_t(QN) : uint8_t(CN);
+        if (nSave > 6) nSave = 6;
+        _calibData.numParams = nSave;
+        for (uint8_t i = 0; i < 6; i++)
+            _calibData.params[i] = (i < nSave) ? src[i] : 0.0f;
         _calibData.savedUncertainty = getUncertainty();
         _savedUncertainty = _calibData.savedUncertainty;
 
@@ -831,10 +934,15 @@ public:
     const ModelEEData& getSavedData() const { return _calibData; }
 
     bool loadFromData(const ModelEEData& d) {
-        if (d.version != 1)                        return false;
+        if (d.version != 2)                        return false;
         if (!d.calibrated)                         return false;
-        if (d.numParams < 2 || d.numParams > 4)   return false;
-        if (d.numParams != d.modelType + 2)        return false;
+        if (d.numParams < 2 || d.numParams > 6)   return false;
+        uint8_t expectedParams;
+        if      (d.modelType == 0) expectedParams = uint8_t(LN < 7 ? LN : 6);
+        else if (d.modelType == 1) expectedParams = uint8_t(QN < 7 ? QN : 6);
+        else if (d.modelType == 2) expectedParams = uint8_t(CN < 7 ? CN : 6);
+        else return false;
+        if (d.numParams != expectedParams)         return false;
         for (uint8_t i = 0; i < d.numParams; i++)
             if (isnan(d.params[i]) || isinf(d.params[i])) return false;
         _calibData = d;

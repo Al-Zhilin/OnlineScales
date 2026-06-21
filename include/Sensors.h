@@ -112,6 +112,7 @@ class TempManager {
     GyverDS18Single *_temp_sensor;                        // хранимое отфильтрованное значение
     uint32_t _start_timer = 0;                            // таймер между между успешными измерениями. Если датчик не готов дольше этого времени - он работает некорректно!!
     bool first_read = true;
+    bool _conv_started = false;
 
   public:
     TempManager(uint8_t pin) {
@@ -124,26 +125,33 @@ class TempManager {
     }
 
     TempState tick() {
-      if (_temp_sensor->tick() == DS18_READY) {
+      uint8_t state = _temp_sensor->tick();
 
+      if (state == DS18_READY) {
         if (first_read) {
-          sensorData.tempC =  _temp_sensor->getTemp();
+          sensorData.tempC = _temp_sensor->getTemp();
           first_read = false;
         }
+        
         else {
           float new_temp = _temp_sensor->getTemp();
           float k = 0.05;
-          if (fabsf(new_temp - sensorData.tempC) > 1.0)  k = 0.9;
-          else if (fabsf(new_temp - sensorData.tempC) > 0.5) k = 0.75;
-
+          if (fabsf(new_temp - sensorData.tempC) > 1.0)       k = 0.9;
+          else if (fabsf(new_temp - sensorData.tempC) > 0.5)  k = 0.75;
           sensorData.tempC += (new_temp - sensorData.tempC) * k;
         }
-
         _start_timer = millis();
+        _conv_started = false;
         return TempState::SUCCESS;
       }
-      else if (millis() - _start_timer < 2000) return TempState::BUSY;
-      else return TempState::ERROR;
+
+      if (_temp_sensor->isWaiting() && !_conv_started) {
+        _conv_started = true;
+        _start_timer = millis();
+      }
+
+      if (millis() - _start_timer < 2000) return TempState::BUSY;
+      return TempState::ERROR;
     }
 };
 

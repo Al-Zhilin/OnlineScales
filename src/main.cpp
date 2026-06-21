@@ -39,7 +39,7 @@ RTC_DATA_ATTR uint8_t rtc_main_fsm_state = 0;              // И для глав
 
 
 AsyncLed<LED_PIN> led(LED_SWITCH_PIN);
-ScalesManager scales(6.7, DT_PIN, SCL_PIN);             // 11.472
+ScalesManager scales(6.7, DT_PIN, SCL_PIN);                // 11.472
 AdaptiveRLS<double, true, 2> compensator(REF_WEIGHT);
 TempManager tempSensor(DS_PIN);
 InputHandler inputHandler(BUTT_PIN, CALIB_SWITCH_PIN, compensator, external_request, currentState);
@@ -75,9 +75,9 @@ void setup() {
 
     inputHandler.begin();
 
-    modemPayload.reserve(1024);                             // Избегаем излишних проблем со String: заранее резервируем память
+    modemPayload.reserve(1024);
     serverResponse.reserve(512);
-    analogSetPinAttenuation(BATT_PIN, ADC_11db);            // явная аттенюация: диапазон 0-3600мВ, не полагаемся на умолчание SDK
+    analogSetPinAttenuation(BATT_PIN, ADC_11db);
 
     Config ModemConfig;
     ModemConfig.pwr_pin = MODEM_PWR_PIN;                                // пин управления питанием SIM800L
@@ -98,18 +98,19 @@ void setup() {
 
     scales.begin();
     compensator.setDebugOut(&Serial);
-    compensator.setNormParams(20.0f, 20.0f);           // seed: ожидаемый центр ≈20°C, полудиапазон 20°C → [0..40°C] без reprojections
+    compensator.setNormParams(20.0f, 20.0f);
     compensator.setVal2Threshold(0.05f);
-    compensator.setInflationParams(0.90f, 8.0f, 25.0f);
-    compensator.setPfloor(0.03f);                       // P не уйдёт ниже 0.03 → K≈0.03 на каждой точке после конвергенции
+    compensator.setInflationParams(1.0f, 999.0f, 25.0f);                  // странный метод, первым параметром 1.0f отключим эту механику пока что
     compensator.setMinDelta(5);
+    compensator.setPfloorPercent(0.05);
     compensator.setMinSamples(10);
-    compensator.setComplexityPenalties(1.10, 1.20);    // соответствует тестам: без необходимости не выбирает кубическую
+    compensator.setComplexityPenalties(1.10, 1.20);
     const float ema_alphas[2] = {0.97f, 0.997f};
     compensator.setEmaAlphas(ema_alphas, 2);
+    compensator.setDriftBoost(120, 10);
     compensator.begin();
 
-    restart_reason = (uint8_t)esp_reset_reason();      // причина завешения предыдущей работы. Пока не используется
+    restart_reason = (uint8_t)esp_reset_reason();
 
     esp_task_wdt_config_t twdt_config = {              // настраиваем конфиг для WDT таймера
       .timeout_ms = WDT_TIMEOUT_MS,                         // период перед резетом
@@ -123,7 +124,7 @@ void setup() {
 
 void loop() {
     led.tick();                                        // тикер светодиода: важен всегда, индикация пользователям не зависит от состояния FSM
-    inputHandler.tick();                                // аналогично и с input
+    inputHandler.tick();                               // аналогично и с input
     esp_task_wdt_reset();
     static uint32_t sendState_timer = millis();
     static ScalesState s_state;
@@ -196,7 +197,7 @@ void loop() {
 
             if (external_request.start_calibration) {                                    // пользователь переключил на режим калибровки
                 external_request.start_calibration = false;
-                external_request.force_send = false;        // сбрасываем force_send: иначе он повиснет незакрытым и сработает в следующем цикле как внеплановая отправка данных
+                //external_request.force_send = false;        // сбрасываем force_send: иначе он повиснет незакрытым и сработает в следующем цикле как внеплановая отправка данных
                 compensator.startCalibration();
                 LOG("Calibration started");
 
@@ -216,7 +217,7 @@ void loop() {
             }
             else if (external_request.end_calibration) {
                 external_request.end_calibration = false;
-                external_request.force_send = false;        // аналогично: не допускаем случайную отправку данных после завершения калибровки
+                //external_request.force_send = false;        // аналогично: не допускаем случайную отправку данных после завершения калибровки
                 bool calib_saved = compensator.finishCalibration();
                 LOG("Калибровка завершена!");
 
@@ -268,8 +269,9 @@ void loop() {
                 msg += "Температура: " + String(sensorData.tempC, 1) + " °C%0A";
 
                 if (compensator.isCalibratingMode()) {
-                    msg += "Вес с компенсацией: " + String(compensator.compensate(sensorData.weightGr, sensorData.tempC) / 1000.0f, 2) + " кг%0A";
-                    msg += "Неуверенность: " + String(compensator.getUncertainty(), 4) + "%0A";
+                    msg += "Вес с компенсацией: " + String(compensator.getCompensation(sensorData.weightGr, sensorData.tempC) / 1000.0f, 2) + " кг%0A";
+                    msg += "Неуверенность модели: " + String(compensator.getUncertainty(), 1) + "%25%0A";
+                    msg += "Точек: " + String(compensator.getNumSamples()) + ", диапазон: " + String(compensator.getCalibrationDelta(), 1) + " C%0A";
                 }
 
                 msg += "Напряжение батареи: " + String(batteryVoltage) + "В";
