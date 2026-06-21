@@ -16,6 +16,9 @@ class ScalesManager {
     int32_t _offset = 0;                                  // оффсет для тарирования (при первом запуске - ноль)
     uint32_t _tare_timer = 0;                             // для таймера от частого тарирования (напр., если пользователь удерживает кнопку дольше, чем нужно)
     uint32_t _start_timer = millis();                     // засекаем millis() после пробуждения HX711 - чтения будем вызыват не ранее, чем после 500мс после запуска (длительность инициализации и первого чтения)
+    float    _filtered        = 0.0f;
+    int32_t  _warmupSum       = 0;
+    uint8_t  _warmupRemaining = 5;                        // 5 чтений (~500 мс при 10 SPS) для усреднения начального значения фильтра
     FileData EEOffset{&LittleFS, "/offset.dat", 'Z', &_offset, sizeof(_offset)};       // объект для управления переменной оффсета в файловой системе
 
   public:
@@ -72,7 +75,11 @@ class ScalesManager {
 
     void sleepMode(bool mode) {                           // вкл/выкл режим сна
       _scales->sleepMode(mode);
-      if (!mode) _start_timer = millis();                 // засекаем время после пробуждения, чтобы выждать таймаут перед первым чтением
+      if (!mode) {
+        _start_timer = millis();                          // засекаем время после пробуждения
+        _warmupSum = 0;
+        _warmupRemaining = 5;                             // после пробуждения АЦП снова нужна прогревочная фаза
+      }
     }
 
     bool isReady() {                                      // защита от слишком раннего чтения
@@ -89,30 +96,53 @@ class ScalesManager {
       
       _start_timer = millis(); // Сбрасываем таймер при успешном чтении
 
-      float k;
       int32_t new_weight = _scales->read();
       if (INVERT_WEIGHT_SIGN)   new_weight *= -1;
-      static float _filtered = new_weight;                          // при первом чтении (создании для static мгновенно подхватит актуальное значение, фильтру не придется долго догонять от нуля до new_weight)
 
-      if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;     
+      // Прогревочная фаза: накапливаем первые 5 чтений и усредняем для инициализации фильтра.
+      // Возвращаем BUSY пока фаза не завершена — sensorData не обновляется.
+      if (_warmupRemaining > 0) {
+        _warmupSum += new_weight;
+        if (--_warmupRemaining == 0)    _filtered = float(_warmupSum) / 5.0f;
+        return ScalesState::BUSY;
+      }
+
+      float k;
+      if (abs(new_weight - _filtered) > STANDART_NOISE) k = 0.65;
       else k = 0.05;
-      _filtered += (new_weight - _filtered) * k;  
+      _filtered += (new_weight - _filtered) * k;
 
       sensorData.weightGr = (float)_filtered / _calibation_factor;  // обновили данные: попугаи -> вес в граммах
       sensorData.weightKg = sensorData.weightGr / 1000;             // еще и вес в кг тоже обновили
 
-      //Serial.print("Koeff: ");
-      //Serial.println(new_weight / 20000.0, 4);       // 8.420 8.0235 7.8050 7.3890 --- 7.60 7.89 7.47
+
+      #ifdef USE_LOG
+        #if WEIGHT_KOEFF_SELECTION == 1
+            uint32_t sum_coeff = 0, count_coeff, weight = 0;
+            String input = "";
+            char c;
+            if (USE_LOG.available()) {
+                c = USE_LOG.read();
+                if (c == '\n') {
+                    // Обработка введенного потока
+                    
+                    input = "";
+                }
+                else if (c != '\r') input += c;
+            }
+        #endif
+      #endif
       return ScalesState::SUCCESS;
     }
 };
 
 class TempManager {
   private:
-    GyverDS18Single *_temp_sensor;                        // хранимое отфильтрованное значение
-    uint32_t _start_timer = 0;                            // таймер между между успешными измерениями. Если датчик не готов дольше этого времени - он работает некорректно!!
+    GyverDS18Single *_temp_sensor;
+    uint32_t _start_timer = 0;                            // таймер между успешными измерениями. Если датчик не готов дольше этого времени - он работает некорректно!!
     bool first_read = true;
     bool _conv_started = false;
+    uint8_t _skipCount = 2;                               // пропустить первые 2 конвертации: DS18B20 может вернуть значение по умолчанию из SRAM до первого реального преобразования
 
   public:
     TempManager(uint8_t pin) {
@@ -128,11 +158,18 @@ class TempManager {
       uint8_t state = _temp_sensor->tick();
 
       if (state == DS18_READY) {
+        if (_skipCount > 0) {
+          --_skipCount;
+          _start_timer = millis();
+          _conv_started = false;
+          return TempState::BUSY;
+        }
+
         if (first_read) {
           sensorData.tempC = _temp_sensor->getTemp();
           first_read = false;
         }
-        
+
         else {
           float new_temp = _temp_sensor->getTemp();
           float k = 0.05;

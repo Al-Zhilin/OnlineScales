@@ -1,8 +1,6 @@
 #pragma once
 #include <Arduino.h>
 
-//#define USE_LOG Serial                            // удобный отладчик через Serial (закомментируй эту строку чтобы отключить)
-
 inline void logHelper(const __FlashStringHelper* msg, const char* func, const char* file, int line) {
     #ifdef USE_LOG
         USE_LOG.print(F("> "));

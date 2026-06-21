@@ -70,13 +70,16 @@ public:
     void setLambda(T lam) { _lambda = (lam > T(0)) ? lam : T(1); }
     void setPfloor(T pf)  { _pfloor = pf; }
 
-    // Multiply every element of P by factor; diagonal elements are capped at diagonalCeiling.
+    // Scale P diagonal by factor (capped at diagonalCeiling); off-diagonal is left unchanged.
+    // Scaling all elements including off-diagonal while capping only the diagonal breaks
+    // positive-definiteness (|P_offdiag| grows past P_diag), which inverts the Kalman gain sign
+    // and causes theta to diverge. Diagonal-only scaling preserves PSD because the diagonal
+    // strictly dominates after scaling (factor >= 1), and keeps the learned correlation structure.
     void scaleP(float factor, float diagonalCeiling = 100000.0f) {
-        for (uint16_t i = 0; i < N; i++)
-            for (uint16_t j = 0; j < N; j++)
-                P[i][j] *= T(factor);
-        for (uint16_t i = 0; i < N; i++)
+        for (uint16_t i = 0; i < N; i++) {
+            P[i][i] *= T(factor);
             if (P[i][i] > T(diagonalCeiling)) P[i][i] = T(diagonalCeiling);
+        }
     }
 
     void setTheta(const float* src) {
@@ -267,6 +270,12 @@ private:
     float normVal2(float v) const {
         if (_normScale <= 0.0f) return 0.0f;
         return (v - _normZero) / _normScale;
+    }
+
+    float _clampVal2(float v) const {
+        if (v < _calibData.minCalibVal2) return _calibData.minCalibVal2;
+        if (v > _calibData.maxCalibVal2) return _calibData.maxCalibVal2;
+        return v;
     }
 
     void _updateEmas(float norm_v) {
@@ -794,7 +803,8 @@ public:
 
         if (!_calibData.calibrated) return rawVal1;
 
-        float t = normVal2(val2);
+        float v2 = _clampVal2(val2);
+        float t = normVal2(v2);
         _updateEmas(t);
         float xL[LN], xQ[QN], xC[CN];
         _buildFeatures(t, xL, xQ, xC);
@@ -825,7 +835,8 @@ public:
 
         if (!_calibData.calibrated) return rawVal1;
 
-        float t = normVal2(val2);
+        float v2 = _clampVal2(val2);
+        float t = normVal2(v2);
         float xL[LN], xQ[QN], xC[CN];
         _buildFeatures(t, xL, xQ, xC);
         T pred = (bestModel == 0) ? linearModel.predict(xL)
