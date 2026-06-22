@@ -40,7 +40,7 @@ RTC_DATA_ATTR uint8_t rtc_main_fsm_state = 0;              // И для глав
 
 AsyncLed<LED_PIN> led(LED_SWITCH_PIN);
 ScalesManager scales(6.7, DT_PIN, SCL_PIN);                // 11.472
-AdaptiveRLS<double, true, 2> compensator(REF_WEIGHT);
+AdaptiveRLS<double, true, 2> compensator;
 TempManager tempSensor(DS_PIN);
 InputHandler inputHandler(BUTT_PIN, CALIB_SWITCH_PIN, compensator, external_request, currentState);
 Sim800LManager modemManager;
@@ -108,7 +108,6 @@ void setup() {
     const float ema_alphas[2] = {0.97f, 0.997f};
     compensator.setEmaAlphas(ema_alphas, 2);
     compensator.setDriftBoost(120, 10);
-    compensator.begin();
 
     restart_reason = (uint8_t)esp_reset_reason();
 
@@ -149,13 +148,13 @@ void loop() {
             break;
 
         case SystemState::MEASURE: {                       // измерения температуры и веса
-            if (s_state == ScalesState::BUSY) s_state = scales.tick();              // после пробуждения hx711 еще примерно 400мс настраивается и делает первое измерение - проверяем готовность перед чтением, иначе - мусор/старые значения! (Но обязательно с защитой от зависания!!)
+            if (s_state == ScalesState::BUSY) s_state = scales.tick();              // после пробуждения hx711 еще примерно 400мс настраивается и делает первое измерение - проверяем готовность перед чтением, иначе - мусор/старые значения! (Но обязательно с защитой от зависания!! и пропуском первых нескольких измерений после запуска проекта - мусорные/нестабильные)
             if (t_state == TempState::BUSY) t_state = tempSensor.tick();            // обновляем и температуру, с обработкой готовности и таймаута
 
             if (s_state == ScalesState::BUSY || t_state == TempState::BUSY) {
               //Serial.println(String((s_state == ScalesState::BUSY) ? "Ждем весы..." : "Ждем термометр..."));
               break;
-            }
+            }    
 
             // Быстрая диагностика датчиков на возможные неисправности:
             bool current_sensor_error = false;
@@ -196,9 +195,11 @@ void loop() {
             }
 
             if (external_request.start_calibration) {                                    // пользователь переключил на режим калибровки
+                if (!sensorData.weightGr) break;                             // ждём первое ненулевое измерение
+                compensator.begin(sensorData.weightGr);                      // фиксируем референс = текущий вес; при повторном вызове обновляет referenceVal1
+                compensator.startCalibration();
                 external_request.start_calibration = false;
                 //external_request.force_send = false;        // сбрасываем force_send: иначе он повиснет незакрытым и сработает в следующем цикле как внеплановая отправка данных
-                compensator.startCalibration();
                 LOG("Calibration started");
 
                 String msg = "Переключатель переведен в режим калибровки";
@@ -216,9 +217,9 @@ void loop() {
                 break;
             }
             else if (external_request.end_calibration) {
+                bool calib_saved = compensator.finishCalibration();
                 external_request.end_calibration = false;
                 //external_request.force_send = false;        // аналогично: не допускаем случайную отправку данных после завершения калибровки
-                bool calib_saved = compensator.finishCalibration();
                 LOG("Калибровка завершена!");
 
                 String msg = "Калибровка завершена:%0A";

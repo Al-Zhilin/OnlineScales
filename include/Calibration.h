@@ -228,6 +228,9 @@ private:
     static constexpr uint8_t CN    = uint8_t(4 + _NE); // длина вектора признаков кубической модели: [t^3, t^2, t, ema..., 1]
     static constexpr uint8_t _EABUF = (_NE > 0) ? _NE : 1; // размер буфера EMA (минимум 1 для корректной компиляции)
 
+    // ── Общие состояния ─────────────────────────────────────────────────────
+    bool _isBegined = false;
+
     // ── Модели ──────────────────────────────────────────────────────────────
     RLSModel<LN, T> linearModel;      // линейная модель: y = a*t + b (+ EMA-члены)
     RLSModel<QN, T> quadraticModel;   // квадратичная модель: y = a*t^2 + b*t + c (+ EMA-члены)
@@ -575,7 +578,7 @@ private:
 public:
     // ──────────────────────────── конструктор ──────────────────────────────
     // Вход: refVal1 — эталонное значение val1 (целевая точка без ошибки, например 0.0 для нулевого дрейфа).
-    explicit AdaptiveRLS(T refVal1) : referenceVal1(refVal1) {}
+    explicit AdaptiveRLS()  {}
 
     // ──────────────────────────── конфигурация ─────────────────────────────
 
@@ -699,19 +702,25 @@ public:
     // Инициализирует хранилище и загружает сохранённые данные калибровки.
     // LittleFS: читает /calib.dat; при отсутствии валидных данных записывает начальную структуру.
     // EEPROM: читает из адреса 0; вызывает _loadData() для валидации.
-    void begin() {
-#if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
-        FDstat_t stat = _fileData.read();
-        if (stat == FD_READ) {
-            _loadData();
-        } else {
-            _fileData.write();
-        }
-#elif CALIB_STORAGE == CALIB_STORAGE_EEPROM
-        EEPROM.begin(sizeof(ModelEEData));
-        EEPROM.get(0, _calibData);
-        _loadData();
-#endif
+    void begin(T RefVal1) {
+        _isBegined = true;
+        referenceVal1 = RefVal1;
+        #if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
+                FDstat_t stat = _fileData.read();
+                if (stat == FD_READ) {
+                    _loadData();
+                } else {
+                    _fileData.write();
+                }
+        #elif CALIB_STORAGE == CALIB_STORAGE_EEPROM
+                EEPROM.begin(sizeof(ModelEEData));
+                EEPROM.get(0, _calibData);
+                _loadData();
+        #endif
+    }
+
+    bool isBegined() {
+        return this->_isBegined;
     }
 
     // ──────────────────────────── калибровка ────────────────────────────────
@@ -719,7 +728,7 @@ public:
     // Сбрасывает состояние и начинает новую сессию калибровки.
     // Очищает theta, P, EMA, CMA-статистику, устанавливает нормировку из _preferredNorm*.
     // Ненастроенным EMA-каналам присваиваются умолчания: alpha_i = 1 - 1/(10*2^i).
-    void startCalibration() {
+    bool startCalibration() {
         isCalibrating     = true;
         samplesCount      = 0;
         max_val2          = -FLT_MAX;
@@ -749,6 +758,8 @@ public:
             uint32_t w = _minSamples - 1;
             _cmaWarmup = (w > 255u) ? uint8_t(255) : uint8_t(w);
         }
+
+        return true;
     }
 
     // Добавляет одну точку в калибровочную выборку и обновляет модели.
