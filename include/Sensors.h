@@ -77,8 +77,6 @@ class ScalesManager {
       _scales->sleepMode(mode);
       if (!mode) {
         _start_timer = millis();                          // засекаем время после пробуждения
-        _warmupSum = 0;
-        _warmupRemaining = 5;                             // после пробуждения АЦП снова нужна прогревочная фаза
       }
     }
 
@@ -101,9 +99,10 @@ class ScalesManager {
 
       // Первые несколько значений с тензодатчиков могут быть нестабильны/ложны, берем из них среднее
       // Возвращаем BUSY пока фаза не завершена — sensorData не обновляется.
-      if (_warmupRemaining > 0) {
-        _warmupSum += new_weight;
-        if (--_warmupRemaining == 0)    _filtered = float(_warmupSum) / 5.0f;
+      static uint8_t _warmup_reading = _warmupRemaining;
+      if (_warmup_reading > 0) {
+        if (_warmup_reading <= ((_warmupRemaining + 1) * 0.5f)) _warmupSum += new_weight;
+        if (--_warmup_reading == 0)    _filtered = float(_warmupSum) / ((_warmupRemaining + 1) / 2);
         return ScalesState::BUSY;
       }
 
