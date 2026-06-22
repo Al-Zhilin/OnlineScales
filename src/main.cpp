@@ -98,16 +98,16 @@ void setup() {
 
     scales.begin();
     compensator.setDebugOut(&Serial);
-    compensator.setNormParams(20.0f, 20.0f);
+    compensator.setNormParams(20.0f, 25.0f);
     compensator.setVal2Threshold(0.05f);
     compensator.setInflationParams(1.0f, 999.0f, 25.0f);                  // странный метод, первым параметром 1.0f отключим эту механику пока что
     compensator.setMinDelta(5);
-    compensator.setPfloorPercent(0.05);
-    compensator.setMinSamples(10);
+    compensator.setPfloorPercent(0.0004f);
+    compensator.setMinSamples(30);
     compensator.setComplexityPenalties(1.10, 1.20);
     const float ema_alphas[2] = {0.97f, 0.997f};
     compensator.setEmaAlphas(ema_alphas, 2);
-    compensator.setDriftBoost(120, 10);
+    compensator.setDriftBoost(200, 100);
 
     restart_reason = (uint8_t)esp_reset_reason();
 
