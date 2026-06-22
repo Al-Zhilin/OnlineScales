@@ -99,7 +99,7 @@ class ScalesManager {
       int32_t new_weight = _scales->read();
       if (INVERT_WEIGHT_SIGN)   new_weight *= -1;
 
-      // Прогревочная фаза: накапливаем первые 5 чтений и усредняем для инициализации фильтра.
+      // Первые несколько значений с тензодатчиков могут быть нестабильны/ложны, берем из них среднее
       // Возвращаем BUSY пока фаза не завершена — sensorData не обновляется.
       if (_warmupRemaining > 0) {
         _warmupSum += new_weight;

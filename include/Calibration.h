@@ -1,8 +1,7 @@
 #pragma once
 
-// ──────────────────────────────────────────────────────────────────────────────
-//  Storage backend selection  (set via build_flags or before including)
-// ──────────────────────────────────────────────────────────────────────────────
+//  Выбор хранилища (задаётся через build_flags или до включения файла)
+
 #define CALIB_STORAGE_MANUAL    0
 #define CALIB_STORAGE_EEPROM    1
 #define CALIB_STORAGE_LITTLEFS  2
@@ -24,42 +23,48 @@
 #include <float.h>
 #include <type_traits>
 
-// ──────────────────────────────────────────────────────────────────────────────
-//  Persistent calibration data  (stored in flash / EEPROM)
-// ──────────────────────────────────────────────────────────────────────────────
+
+//  Данные калибровки для сохранения во flash / EEPROM
+
 struct ModelEEData {
-    uint8_t  version          = 2;       // format version; increment when layout changes
-    uint8_t  modelType        = 0;       // 0=linear  1=quadratic  2=cubic
-    uint8_t  numParams        = 0;       // actual theta length for bestModel (LN/QN/CN, capped at 6)
-    bool     calibrated       = false;
-    float    params[6]        = {};      // theta in normalised coordinates (up to 6 for EMA models)
-    float    minCalibVal2     = 0.0f;
-    float    maxCalibVal2     = 0.0f;
-    float    savedUncertainty = 100.0f; // P-uncertainty at finishCalibration(); restored after load
+    uint8_t  version          = 2;       // версия формата; увеличивать при изменении раскладки структуры
+    uint8_t  modelType        = 0;       // тип модели: 0=линейная, 1=квадратичная, 2=кубическая
+    uint8_t  numParams        = 0;       // реальная длина theta для лучшей модели (LN/QN/CN, не более 6)
+    bool     calibrated       = false;   // флаг успешно завершённой калибровки
+    float    params[6]        = {};      // коэффициенты theta в нормализованных координатах (до 6 для EMA-моделей)
+    float    minCalibVal2     = 0.0f;    // минимальный val2, наблюдавшийся при калибровке
+    float    maxCalibVal2     = 0.0f;    // максимальный val2, наблюдавшийся при калибровке
+    float    savedUncertainty = 100.0f;  // неопределённость P в момент finishCalibration(); восстанавливается после загрузки
 };
 
-// ──────────────────────────────────────────────────────────────────────────────
-//  RLSModel<N, T>  —  single recursive least-squares model with N features
-// ──────────────────────────────────────────────────────────────────────────────
+
+//  RLSModel<N, T> — одна рекуррентная регрессионная модель с N признаками
+//    N — размерность вектора признаков
+//    T — тип вычислений (рекомендуется double)
+
 template <uint16_t N, typename T = double>
 class RLSModel {
     static_assert(std::is_floating_point<T>::value, "RLSModel requires floating-point T");
 
 private:
-    float theta[N]   = {};
-    T     P[N][N]    = {};
-    T     _lambda    = T(1);
-    T     _pfloor    = T(0);
-    float _p0Scale   = 100000.0f;
+    float theta[N]   = {};         // вектор коэффициентов регрессии (веса модели)
+    T     P[N][N]    = {};         // ковариационная матрица неопределённости; диагональ сужается по мере сходимости
+    T     _lambda    = T(1);       // коэффициент забывания λ ∈ (0,1]; 1 = без забывания
+    T     _pfloor    = T(0);       // нижняя граница диагонали P; предотвращает «замерзание» усиления Калмана
+    float _p0Scale   = 100000.0f; // начальное значение диагонали P; задаёт масштаб 100%-ной неопределённости
 
 public:
+    // Конструктор: инициализирует theta=0, P=_p0Scale*I.
     RLSModel() { reset(); }
 
+    // Сбрасывает theta к нулю и P к начальной диагональной матрице (100000*I).
     void reset() {
         for (uint16_t i = 0; i < N; i++) theta[i] = 0.0f;
         resetP(100000.0f);
     }
 
+    // Сбрасывает P к val*I и сохраняет val как масштаб неопределённости (_p0Scale).
+    // Вход: val — новое начальное значение диагонали P; используется как 100% для getUncertainty().
     void resetP(float val) {
         _p0Scale = val;
         for (uint16_t i = 0; i < N; i++)
@@ -67,14 +72,19 @@ public:
                 P[i][j] = (i == j) ? T(val) : T(0);
     }
 
+    // Устанавливает коэффициент забывания λ. Значения ≤0 заменяются на 1 (без забывания).
+    // Вход: lam — λ ∈ (0,1]; чем меньше значение, тем быстрее «забываются» старые точки.
     void setLambda(T lam) { _lambda = (lam > T(0)) ? lam : T(1); }
+
+    // Устанавливает нижнюю границу диагонали P.
+    // Вход: pf — минимальное значение элемента диагонали P; не даёт усилению Калмана обнулиться/упасть слишком низко.
     void setPfloor(T pf)  { _pfloor = pf; }
 
-    // Scale P diagonal by factor (capped at diagonalCeiling); off-diagonal is left unchanged.
-    // Scaling all elements including off-diagonal while capping only the diagonal breaks
-    // positive-definiteness (|P_offdiag| grows past P_diag), which inverts the Kalman gain sign
-    // and causes theta to diverge. Diagonal-only scaling preserves PSD because the diagonal
-    // strictly dominates after scaling (factor >= 1), and keeps the learned correlation structure.
+    // Масштабирует только диагональ P на factor (не более diagonalCeiling); внедиагональные элементы не трогаются.
+    // Вход: factor — множитель для диагонали; diagonalCeiling — верхняя граница диагонального элемента.
+    // Масштабирование только диагонали сохраняет положительную определённость (PSD): при factor≥1
+    // диагональ строго доминирует, а выученная структура корреляций (внедиагональ) остаётся нетронутой.
+    // Масштабирование всех элементов с ограничением только диагонали нарушает PSD — знак усиления Калмана инвертируется.
     void scaleP(float factor, float diagonalCeiling = 100000.0f) {
         for (uint16_t i = 0; i < N; i++) {
             P[i][i] *= T(factor);
@@ -82,15 +92,19 @@ public:
         }
     }
 
+    // Загружает вектор коэффициентов из внешнего буфера.
+    // Вход: src — указатель на массив из N float; nullptr игнорируется.
     void setTheta(const float* src) {
         if (!src) return;
         for (uint16_t i = 0; i < N; i++) theta[i] = src[i];
     }
 
+    // Возвращает указатель на внутренний вектор коэффициентов theta (только чтение).
     const float* getTheta() const { return theta; }
 
-    // Returns 100% before any data; shrinks as P converges toward 0.
-    // Capped at 100%: _tryReproject() can momentarily inflate P above the initial scale.
+    // Возвращает глобальную неопределённость как % от начального масштаба (0..100%).
+    // Вычисляется как trace(P)/(N*_p0Scale)*100. Ограничена 100%: _tryReproject() может
+    // кратковременно раздувать P выше начального масштаба.
     float getUncertainty() const {
         T trace = T(0);
         for (uint16_t i = 0; i < N; i++) trace += P[i][i];
@@ -98,7 +112,9 @@ public:
         return (u > 100.0f) ? 100.0f : u;
     }
 
-    // 2-argument update: feature vector x[N], target y
+    // Выполняет один шаг рекуррентного МНК: обновляет theta и P по новой точке (x, y).
+    // Вход: x — вектор признаков длиной N; y — целевое значение (ошибка сенсора).
+    // NaN/Inf в x или y пропускаются без изменения состояния.
     void update(const float* x, T y) {
         if (isnan(float(y)) || isinf(float(y))) return;
         for (uint16_t i = 0; i < N; i++)
@@ -134,14 +150,14 @@ public:
             trace += P[i][i];
         }
 
-        // Symmetrize to prevent float drift accumulation
+        // Симметризация P для компенсации накопления ошибок округления float
         for (uint16_t i = 0; i < N; i++)
             for (uint16_t j = i + 1; j < N; j++)
                 P[i][j] = P[j][i] = (P[i][j] + P[j][i]) * T(0.5);
 
         if (float(trace) > 1e6f || isnan(float(trace))) {
-            // Overflow: reset P and theta (both numerically suspect).
-            // Restore P to p0Scale*I so uncertainty returns to 100% and learning resumes.
+            // Переполнение: theta и P численно недостоверны — сброс обоих.
+            // P восстанавливается до p0Scale*I: неопределённость возвращается к 100% и обучение продолжается.
             for (uint16_t ii = 0; ii < N; ii++) {
                 theta[ii] = 0.0f;
                 for (uint16_t jj = 0; jj < N; jj++)
@@ -150,16 +166,18 @@ public:
         }
     }
 
-    // Higher-precision predict — returns T so full double accuracy is preserved in compensate().
+    // Вычисляет предсказание модели: y = theta^T * x. Возвращает T для сохранения точности double.
+    // Вход: x — вектор признаков длиной N.
+    // Выход: скалярное предсказание в типе T (double сохраняет точность в compensate()).
     T predict(const float* x) const {
         T res = T(0);
         for (uint16_t i = 0; i < N; i++) res += T(theta[i]) * T(x[i]);
         return res;
     }
 
-    // Point-wise predictive variance: (x^T P x) / (p0Scale * ||x||^2) * 100 %.
-    // At calibration start = 100 %; shrinks to 0 % as the model converges at x.
-    // Capped at 100% for the same reason as getUncertainty().
+    // Вычисляет точечную неопределённость модели в направлении вектора x: (x^T P x)/(p0Scale*||x||^2)*100%.
+    // Вход: x — вектор признаков длиной N (то же, что передаётся в predict()).
+    // Выход: 100% в начале калибровки; убывает к 0% по мере сходимости именно в точке x. Ограничена 100%.
     float getUncertaintyAt(const float* x) const {
         T xPx = T(0), norm2 = T(0);
         for (uint16_t i = 0; i < N; i++) {
@@ -173,8 +191,10 @@ public:
         return (u > 100.0f) ? 100.0f : u;
     }
 
-    // Apply coordinate change P = M^T * P * M  (x_old = M * x_new)
-    // Symmetrizes after the transform to prevent float drift from accumulating.
+    // Применяет замену координат к матрице P: P_new = M^T * P_old * M (x_old = M * x_new).
+    // Вход: M — матрица преобразования N×N (x_old = M * x_new).
+    // Используется после _reprojectPoly() при смене нормировки val2 для согласованности P и theta.
+    // После преобразования P симметризуется для компенсации накопления ошибок float.
     void applyPTransform(const float (*M)[N]) {
         T temp[N][N] = {};
         for (uint16_t i = 0; i < N; i++)
@@ -193,91 +213,102 @@ public:
     }
 };
 
-// ──────────────────────────────────────────────────────────────────────────────
-//  AdaptiveRLS<T, EnableDynamic, NumEma>
-//    T             – floating-point precision  (double recommended)
-//    EnableDynamic – when true: adaptive lambda + EMA feature extension
-//    NumEma        – number of EMA filters appended as extra features
-// ──────────────────────────────────────────────────────────────────────────────
+
+//  AdaptiveRLS<T, EnableDynamic, NumEma> — адаптивный RLS-компенсатор дрейфа
+//    T             — точность вычислений (рекомендуется double)
+//    EnableDynamic — включает адаптивный λ и EMA-признаки
+//    NumEma        — количество EMA-фильтров, добавляемых как дополнительные признаки
+
 template <typename T = double, bool EnableDynamic = false, uint8_t NumEma = 0>
 class AdaptiveRLS {
 private:
-    static constexpr uint8_t _NE   = EnableDynamic ? NumEma : 0;
-    static constexpr uint8_t LN    = uint8_t(2 + _NE);
-    static constexpr uint8_t QN    = uint8_t(3 + _NE);
-    static constexpr uint8_t CN    = uint8_t(4 + _NE);
-    static constexpr uint8_t _EABUF = (_NE > 0) ? _NE : 1;
+    static constexpr uint8_t _NE    = EnableDynamic ? NumEma : 0; // эффективное число EMA (0 если !EnableDynamic)
+    static constexpr uint8_t LN    = uint8_t(2 + _NE); // длина вектора признаков линейной модели: [t, ema..., 1]
+    static constexpr uint8_t QN    = uint8_t(3 + _NE); // длина вектора признаков квадратичной модели: [t^2, t, ema..., 1]
+    static constexpr uint8_t CN    = uint8_t(4 + _NE); // длина вектора признаков кубической модели: [t^3, t^2, t, ema..., 1]
+    static constexpr uint8_t _EABUF = (_NE > 0) ? _NE : 1; // размер буфера EMA (минимум 1 для корректной компиляции)
 
-    // ── Models ──────────────────────────────────────────────────────────────
-    RLSModel<LN, T> linearModel;
-    RLSModel<QN, T> quadraticModel;
-    RLSModel<CN, T> cubicModel;
+    // ── Модели ──────────────────────────────────────────────────────────────
+    RLSModel<LN, T> linearModel;      // линейная модель: y = a*t + b (+ EMA-члены)
+    RLSModel<QN, T> quadraticModel;   // квадратичная модель: y = a*t^2 + b*t + c (+ EMA-члены)
+    RLSModel<CN, T> cubicModel;       // кубическая модель: y = a*t^3 + ... + d (+ EMA-члены)
 
-    // ── Calibration state ───────────────────────────────────────────────────
-    T           referenceVal1;
-    ModelEEData _calibData;
-    bool        isCalibrating    = false;
-    uint8_t     bestModel        = 0;
-    uint32_t    samplesCount     = 0;
-    float       max_val2         = -FLT_MAX;
-    float       min_val2         =  FLT_MAX;
-    float       delta            = 0.0f;
-    float       linearErrorCMA   = 0.0f;
-    float       quadraticErrorCMA = 0.0f;
-    float       cubicErrorCMA    = 0.0f;
+    // ── Состояние калибровки ─────────────────────────────────────────────────
+    T           referenceVal1;               // эталонное val1 при калибровке (целевая точка без дрейфа)
+    ModelEEData _calibData;                  // данные, сохраняемые во flash/EEPROM
+    bool        isCalibrating    = false;    // true в процессе calibrationStep(); false после finish/reset
+    uint8_t     bestModel        = 0;        // индекс лучшей модели: 0=линейная, 1=квадратичная, 2=кубическая
+    uint32_t    samplesCount     = 0;        // количество принятых шагов calibrationStep()
+    float       max_val2         = -FLT_MAX; // максимальный val2 за сессию (для delta и нормировки)
+    float       min_val2         =  FLT_MAX; // минимальный val2 за сессию (для delta и нормировки)
+    float       delta            = 0.0f;     // размах val2: max_val2 - min_val2; проверяется в finishCalibration()
+    float       linearErrorCMA   = 0.0f;     // CMA абсолютной ошибки линейной модели (на данных до update)
+    float       quadraticErrorCMA = 0.0f;    // CMA абсолютной ошибки квадратичной модели
+    float       cubicErrorCMA    = 0.0f;     // CMA абсолютной ошибки кубической модели
 
-    // ── Normalisation ────────────────────────────────────────────────────────
-    float _normZero           = 0.0f;
-    float _normScale          = 0.0f;   // 0 = uninitialized sentinel
-    float _preferredNormZero  = 0.0f;
-    float _preferredNormScale = 0.0f;
-    float _lastVal2           = NAN;    // NAN = no previous value
+    // ── Нормировка ───────────────────────────────────────────────────────────
+    float _normZero           = 0.0f;  // центр нормировки: t = (val2 - _normZero) / _normScale
+    float _normScale          = 0.0f;  // полуширина диапазона нормировки; 0 = не инициализировано
+    float _preferredNormZero  = 0.0f;  // предпочтительный центр нормировки (задаётся setNormParams)
+    float _preferredNormScale = 0.0f;  // предпочтительная полуширина нормировки (задаётся setNormParams)
+    float _lastVal2           = NAN;   // предыдущий val2; NAN = нет предыдущего (для фильтрации малых шагов)
 
-    // ── EMA state ───────────────────────────────────────────────────────────
-    float _emaState [_EABUF] = {};
-    float _emaAlphas[_EABUF] = {};
-    bool  _emaInitialized    = false;
+    // ── Состояние EMA ────────────────────────────────────────────────────────
+    float _emaState [_EABUF] = {};     // текущие значения EMA-фильтров в нормированных координатах
+    float _emaAlphas[_EABUF] = {};     // коэффициенты сглаживания EMA: (1 - alpha_i) = вес нового значения
+    bool  _emaInitialized    = false;  // true после первого обращения к _updateEmas(); сброс в startCalibration()
 
-    // ── Parameters ──────────────────────────────────────────────────────────
-    uint32_t _minSamples    = 10;
-    float    _minDelta      = 5.0f;
-    float    _val2Threshold = 0.5f;
-    float    _penaltyQuad   = 1.10f;
-    float    _penaltyCubic  = 1.20f;
-    float    _lambdaBase    = 1.0f;
-    float    _slopeThresh   = 8.0f;
-    float    _slopeGain     = 25.0f;
-    float    _pfloor        = 0.0f;
-    uint8_t  _cmaWarmup     = 3;    // first N samples train model but skip CMA scoring
+    // ── Параметры ────────────────────────────────────────────────────────────
+    uint32_t _minSamples    = 10;     // минимум принятых шагов для успешного finishCalibration()
+    float    _minDelta      = 5.0f;   // минимальный размах val2 для успешного finishCalibration()
+    float    _val2Threshold = 0.5f;   // минимальный шаг val2 между calibrationStep(); меньшие пропускаются
+    float    _penaltyQuad   = 1.10f;  // штраф CMA-ошибки квадратичной модели при выборе лучшей (сложность)
+    float    _penaltyCubic  = 1.20f;  // штраф CMA-ошибки кубической модели при выборе лучшей
+    float    _lambdaBase    = 1.0f;   // минимальный λ при адаптивном забывании (EnableDynamic); 1.0 = без забывания
+    float    _slopeThresh   = 8.0f;   // порог |Δval2|, при превышении которого λ начинает уменьшаться
+    float    _slopeGain     = 25.0f;  // крутизна снижения λ: 1/_slopeGain — ширина переходной зоны
+    float    _pfloor        = 0.0f;   // нижняя граница диагонали P для всех моделей
+    uint8_t  _cmaWarmup     = 3;      // первые N шагов обучают модели, но не участвуют в CMA-оценке
 
-    // ── Post-calibration state ───────────────────────────────────────────────
-    float _savedUncertainty = 100.0f; // stored at finishCalibration(); returned when _isLoaded
-    bool  _isLoaded         = false;  // set by _loadData(); cleared by startCalibration()
+    // ── Состояние после калибровки ───────────────────────────────────────────
+    float _savedUncertainty = 100.0f; // неопределённость, сохранённая в finishCalibration(); возвращается при _isLoaded
+    bool  _isLoaded         = false;  // true после _loadData(); сбрасывается в startCalibration()
 
-    // ── Auto-boost during calibration ────────────────────────────────────────
-    float _driftThreshold   = 0.0f;    // 0 = disabled; max acceptable residual in rawVal1 units
-    float _driftBoostFactor = 100.0f;  // P multiplier applied when residual exceeds threshold
+    // ── Авто-буст во время калибровки ────────────────────────────────────────
+    float   _driftThreshold     = 0.0f;  // порог остатка (в единицах rawVal1) для буста P; 0 = отключено
+    float   _driftBoostFactor   = 10.0f; // множитель для boostP() при превышении _driftThreshold
+    uint8_t _boostCooldownSteps = 5;     // число шагов блокировки буста после срабатывания
+    uint8_t _boostCooldown      = 0;     // оставшийся кулдаун; 0 = буст разрешён
 
-    // ── Debug ────────────────────────────────────────────────────────────────
-    Print* _debugOut = nullptr;
+    // ── Отладка ──────────────────────────────────────────────────────────────
+    Print* _debugOut = nullptr;         // поток отладочного вывода; nullptr = отключено
 
 #if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
     FileData _fileData{&LittleFS, "/calib.dat", 'Z', &_calibData, sizeof(ModelEEData)};
 #endif
 
-    // ─────────────────────────── private helpers ─────────────────────────────
+    // ─────────────────────────── приватные вспомогательные ───────────────────
 
+    // Нормализует val2 в безразмерный признак t = (v - _normZero) / _normScale.
+    // Вход: v — значение val2 в физических единицах.
+    // Выход: нормализованный признак t; 0 при незаданной нормировке (_normScale≤0).
     float normVal2(float v) const {
         if (_normScale <= 0.0f) return 0.0f;
         return (v - _normZero) / _normScale;
     }
 
+    // Ограничивает val2 диапазоном калибровки [minCalibVal2, maxCalibVal2].
+    // Вход: v — произвольный val2.
+    // Выход: v, зажатый в сохранённый диапазон; предотвращает экстраполяцию за пределы калибровки.
     float _clampVal2(float v) const {
         if (v < _calibData.minCalibVal2) return _calibData.minCalibVal2;
         if (v > _calibData.maxCalibVal2) return _calibData.maxCalibVal2;
         return v;
     }
 
+    // Обновляет EMA-фильтры по нормализованному значению norm_v.
+    // При первом вызове инициализирует все EMA в norm_v (холодный старт).
+    // Вход: norm_v — нормализованный val2 (t). Нет эффекта если !EnableDynamic || NumEma==0.
     void _updateEmas(float norm_v) {
         if constexpr (EnableDynamic && NumEma > 0) {
             if (!_emaInitialized) {
@@ -291,6 +322,9 @@ private:
         }
     }
 
+    // Формирует векторы признаков для трёх моделей из нормализованного t и текущих EMA.
+    // Вход: t — нормализованный val2; xL[LN]/xQ[QN]/xC[CN] — выходные буферы признаков.
+    // Структура: [t^deg, ..., t, ema_0, ..., ema_k, 1.0] (bias всегда последний).
     void _buildFeatures(float t, float* xL, float* xQ, float* xC) const {
         xL[0] = t;
         xQ[0] = t*t;     xQ[1] = t;
@@ -312,11 +346,13 @@ private:
         }
     }
 
-    // Build upper-triangular M[Sz][Sz] for polynomial coord change x_old = M * x_new.
-    // Row p: t_old^(deg-p) = sum_j C(deg-p,j)*alpha^j*beta^(deg-p-j)*t_new^j
-    // Constant term (j=0) → bias at position Sz-1; t^j (j>0) → position deg-j.
-    // EMA rows (deg..Sz-2): same linear transform as t → M[p][p]=alpha, M[p][Sz-1]=beta.
-    // Bias row (Sz-1): identity.
+    // Строит верхнетреугольную матрицу преобразования M[Sz][Sz] для замены координат
+    // t_old = alpha*t_new + beta в полиномиальном пространстве признаков.
+    // Вход: M — выходной буфер Sz×Sz; alpha, beta — параметры аффинного преобразования val2;
+    //       deg — степень полинома (1/2/3).
+    // Строка p (степень deg-p): биномиальное разложение t_old^(deg-p) по степеням t_new.
+    // EMA-строки (deg..Sz-2): линейное преобразование M[p][p]=alpha, M[p][Sz-1]=beta.
+    // Строка смещения (Sz-1): тождественная.
     template<int Sz>
     static void _buildPolyM(float (&M)[Sz][Sz], float alpha, float beta, int deg) {
         for (int i = 0; i < Sz; i++) for (int j = 0; j < Sz; j++) M[i][j] = 0.0f;
@@ -334,22 +370,23 @@ private:
                 if (j < k) binom = binom * uint32_t(k - j) / uint32_t(j + 1);
             }
         }
-        // EMA features undergo the same linear transform as t: ema_old = alpha*ema_new + beta
+        // EMA-признаки преобразуются линейно (так же как t): ema_old = alpha*ema_new + beta
         for (int p = deg; p < Sz - 1; p++) {
             M[p][p]     = alpha;
             M[p][Sz-1]  = beta;
         }
-        M[Sz-1][Sz-1] = 1.0f;  // bias row: identity
+        M[Sz-1][Sz-1] = 1.0f;  // строка смещения: тождественная
     }
 
-    // Reproject polynomial theta under t_old = alpha*t_new + beta.
-    // `degree` = polynomial degree (1/2/3); `total` = total theta length.
-    // EMA entries (indices degree..total-2) undergo the same linear transform as t:
-    //   ema_old = alpha*ema_new + beta  →  theta_ema *= alpha, bias += theta_ema*beta.
+    // Перепроецирует коэффициенты theta полинома при замене нормировки t_old = alpha*t_new + beta.
+    // Вход: th — вектор theta; degree — степень полинома (1/2/3); total — полная длина th;
+    //       alpha, beta — параметры аффинного преобразования нормировки.
+    // EMA-коэффициенты (индексы degree..total-2) масштабируются на alpha;
+    // их сдвиг beta суммируется в bias (последний элемент th).
     static void _reprojectPoly(float* th, uint8_t degree, uint8_t total,
                                 float alpha, float beta) {
         uint8_t bi = uint8_t(total - 1);
-        // Scale EMA coefficients by alpha; accumulate their beta shift into bias.
+        // Масштабирование EMA-коэффициентов на alpha; накопление их beta-сдвига в смещение
         float emaBeta = 0.0f;
         for (uint8_t i = degree; i < bi; i++) {
             emaBeta += th[i] * beta;
@@ -373,11 +410,13 @@ private:
         }
     }
 
-    // Expand normalisation to cover val2 and reproject all model thetas.
+    // Расширяет диапазон нормировки чтобы охватить val2, затем перепроецирует
+    // theta и P всех трёх моделей в новые координаты.
+    // При первом вызове инициализирует нормировку: _normZero=val2, _normScale=50
+    // (типичная полуширина для 100°C-диапазона — предотвращает медленную сходимость с малыми признаками).
+    // Вход: val2 — новое значение val2, возможно выходящее за текущий нормировочный диапазон.
     void _tryReproject(float val2) {
         if (_normScale <= 0.0f) {
-            // Seed normalization so the full calibration range maps to roughly t_norm in [0,1]
-            // for typical 100°C-wide calibrations (avoiding slow RLS convergence with tiny features)
             _normZero  = val2;
             _normScale = 50.0f;
             return;
@@ -392,8 +431,8 @@ private:
         float new_scale = (new_max - new_min) * 0.5f;
         if (new_scale < 1e-4f) new_scale = 1e-4f;
 
-        float alpha = new_scale / _normScale;                // new/old: polynomial coeffs grow as range expands
-        float beta  = (new_zero - _normZero) / _normScale;  // shift in old-normalised units
+        float alpha = new_scale / _normScale;                // new/old: коэффициенты полинома растут при расширении диапазона
+        float beta  = (new_zero - _normZero) / _normScale;  // сдвиг в единицах старой нормировки
 
         {
             float buf[LN];
@@ -426,7 +465,7 @@ private:
             cubicModel.applyPTransform(MC);
         }
 
-        // Transform existing EMA states to the new normalisation scale
+        // Перепересчёт существующих EMA-состояний в новую нормировку
         if constexpr (EnableDynamic && NumEma > 0) {
             if (_emaInitialized) {
                 for (uint8_t i = 0; i < NumEma; i++)
@@ -438,6 +477,8 @@ private:
         _normScale = new_scale;
     }
 
+    // Вычисляет bestModel по взвешенным CMA-ошибкам с учётом штрафов за сложность.
+    // Выбирает модель с наименьшим произведением CMA * penalty. Результат записывается в bestModel.
     void _calcBestModel() {
         float sL = linearErrorCMA;
         float sQ = quadraticErrorCMA * _penaltyQuad;
@@ -447,11 +488,13 @@ private:
         else bestModel = 2;
     }
 
-    // Best live model index at any point: CMA-guided during calibration (after warmup),
-    // linear during warmup (CMA not yet valid), bestModel after finishCalibration().
+    // Возвращает индекс «живой» лучшей модели в текущий момент.
+    // Во время прогрева (samplesCount ≤ _cmaWarmup) — всегда 0 (линейная, CMA ещё не достоверна).
+    // После прогрева — модель с наименьшей взвешенной CMA-ошибкой.
+    // После finishCalibration() — сохранённый bestModel.
     uint8_t _liveModelType() const {
         if (isCalibrating) {
-            if (samplesCount <= _cmaWarmup) return 0;  // warmup: CMA not yet valid, use linear
+            if (samplesCount <= _cmaWarmup) return 0;
             float sL = linearErrorCMA;
             float sQ = quadraticErrorCMA * _penaltyQuad;
             float sC = cubicErrorCMA * _penaltyCubic;
@@ -462,11 +505,14 @@ private:
         return bestModel;
     }
 
+    // Загружает параметры из _calibData во внутреннее состояние (theta, нормировка, bestModel).
+    // Выход: true — данные корректны и загружены; false — данные не прошли валидацию.
+    // При успехе устанавливает _isLoaded=true; нормировка восстанавливается по min/max_val2.
     bool _loadData() {
         if (_calibData.version != 2)    return false;
         if (!_calibData.calibrated) return false;
         if (_calibData.numParams < 2 || _calibData.numParams > 6)  return false;
-        // numParams must match the actual theta length for the stored model type
+        // numParams должен совпадать с реальной длиной theta для сохранённого типа модели
         uint8_t expectedParams;
         if      (_calibData.modelType == 0) expectedParams = uint8_t(LN < 7 ? LN : 6);
         else if (_calibData.modelType == 1) expectedParams = uint8_t(QN < 7 ? QN : 6);
@@ -496,6 +542,7 @@ private:
         return true;
     }
 
+    // Сбрасывает все три модели к начальному состоянию и устанавливает pfloor.
     void _resetModels() {
         linearModel.reset();
         quadraticModel.reset();
@@ -506,12 +553,15 @@ private:
         cubicModel.setPfloor(pf);
     }
 
+    // Адаптирует λ всех моделей в зависимости от скорости изменения val2 (только если EnableDynamic).
+    // При |Δval2| > _slopeThresh λ плавно снижается до _lambdaBase; ниже порога λ=1 (без забывания).
+    // Вход: val2 — текущее значение val2; Δval2 вычисляется относительно _lastVal2.
     void _applyAdaptiveLambda(float val2) {
         if constexpr (EnableDynamic) {
             if (!isnan(_lastVal2)) {
-                // Piecewise-linear: no forgetting below slopeThresh, full forgetting at
-                // slopeThresh + 1/slopeGain.  slopeGain=25 → 0.04 °C wide (≈ step);
-                // slopeGain=0.5 → 2 °C wide (smooth ramp).
+                // Кусочно-линейная функция: нет забывания ниже slopeThresh, полное забывание
+                // при slopeThresh + 1/slopeGain. slopeGain=25 → 0.04°C переходная зона;
+                // slopeGain=0.5 → 2°C переходная зона.
                 float excess = fabsf(val2 - _lastVal2) - _slopeThresh;
                 float t = (excess > 0.0f) ? fminf(excess * _slopeGain, 1.0f) : 0.0f;
                 T lam = T(1.0f - t * (1.0f - _lambdaBase));
@@ -523,50 +573,72 @@ private:
     }
 
 public:
-    // ──────────────────────────── construction ──────────────────────────────
+    // ──────────────────────────── конструктор ──────────────────────────────
+    // Вход: refVal1 — эталонное значение val1 (целевая точка без ошибки, например 0.0 для нулевого дрейфа).
     explicit AdaptiveRLS(T refVal1) : referenceVal1(refVal1) {}
 
-    // ──────────────────────────── configuration ─────────────────────────────
+    // ──────────────────────────── конфигурация ─────────────────────────────
+
+    // Устанавливает поток отладочного вывода (Serial и т.п.).
+    // Вход: p — указатель на Print; nullptr отключает вывод.
     void setDebugOut(Print* p)      { _debugOut = p; }
+
+    // Устанавливает минимальный размах val2 для успешного finishCalibration().
+    // Вход: d — минимальный delta (max_val2 - min_val2); при меньшем размахе finish вернёт false.
     void setMinDelta(float d)       { _minDelta = d; }
+
+    // Устанавливает минимальный шаг val2 между соседними calibrationStep().
+    // Вход: thr — порог; calibrationStep() пропускает точку если |Δval2| < thr.
     void setVal2Threshold(float thr){ _val2Threshold = thr; }
 
+    // Устанавливает минимальное число шагов для успешного finishCalibration().
+    // Вход: n — минимальное число принятых calibrationStep(); автоматически корректирует _cmaWarmup
+    //       так, чтобы хотя бы один шаг попал в CMA-оценку после прогрева.
     void setMinSamples(uint32_t n) {
         _minSamples = n;
-        // Invariant: at least 1 sample must contribute to CMA after warmup.
         if (_cmaWarmup >= _minSamples && _minSamples > 0) {
             uint32_t w = _minSamples - 1;
             _cmaWarmup = (w > 255u) ? uint8_t(255) : uint8_t(w);
         }
     }
 
+    // Устанавливает количество шагов прогрева CMA.
+    // Вход: n — первые n шагов обучают модели, но не вносятся в CMA-оценку (theta≈0 до сходимости).
+    //           Автоматически увеличивает _minSamples до n+1 при нарушении инварианта.
     void setCmaWarmup(uint8_t n) {
         _cmaWarmup = n;
-        // Mirror invariant: minSamples must be > cmaWarmup.
         if (_minSamples <= (uint32_t)_cmaWarmup)
             _minSamples = (uint32_t)_cmaWarmup + 1;
     }
 
+    // Устанавливает штрафы за сложность при выборе лучшей модели в finishCalibration().
+    // Вход: pq — множитель CMA-ошибки квадратичной модели (>1.0 штрафует за усложнение);
+    //       pc — множитель CMA-ошибки кубической модели.
     void setComplexityPenalties(double pq, double pc) {
         _penaltyQuad  = float(pq);
         _penaltyCubic = float(pc);
     }
 
-    // Pre-seed normalisation; first points won't cause large reprojections.
-    // scale=0 silently defaults to 50 (typical half-span for 100°C-wide calibrations).
+    // Задаёт предпочтительные начальные параметры нормировки val2 чтобы избежать крупных перепроецирований.
+    // Вход: zero — ожидаемый центр диапазона val2; scale — ожидаемая полуширина (0 → умолчание 50).
     void setNormParams(float zero, float scale) {
         _preferredNormZero  = zero;
         _preferredNormScale = (scale > 1e-4f) ? scale : 50.0f;
     }
 
-    // Adaptive forgetting: lambdaBase = minimum lambda (e.g. 0.9), slopeThresh = |Δval2| onset,
-    // slopeGain = reciprocal transition width (e.g. 25 → 0.04 °C, 0.5 → 2 °C).
+    // Настраивает адаптивное забывание (только при EnableDynamic=true).
+    // Вход: lambdaBase — минимальный λ при быстром изменении val2 (например, 0.9);
+    //       slopeThresh — порог |Δval2|, при котором начинается снижение λ;
+    //       slopeGain — обратная ширина переходной зоны (25 → 0.04 ед.; 0.5 → 2 ед. val2).
     void setInflationParams(float lambdaBase, float slopeThresh, float slopeGain) {
         _lambdaBase  = lambdaBase;
         _slopeThresh = slopeThresh;
         _slopeGain   = slopeGain;
     }
 
+    // Устанавливает нижнюю границу диагонали P для всех трёх моделей.
+    // Вход: pf — минимальное значение диагонального элемента P;
+    //            предотвращает полное «замерзание» усиления Калмана после сходимости.
     void setPfloor(float pf) {
         _pfloor = pf;
         T t = T(pf);
@@ -575,38 +647,44 @@ public:
         cubicModel.setPfloor(t);
     }
 
-    // Set minimum uncertainty floor in human-readable percent (0..100).
-    // Converts: pfloor = (pct / 100) * p0Scale = pct * 1000  (p0Scale is always 100000).
-    // Example: setPfloorPercent(0.01f) → floor at 0.01% → Kalman gain ≈ 10 after convergence.
+    // Устанавливает нижнюю границу P в процентах от масштаба неопределённости (0..100).
+    // Вход: pct — процент; конвертируется: pf = (pct/100)*100000 (_p0Scale=100000).
+    // Пример: setPfloorPercent(0.01) → floor 0.01% → усиление Калмана ≈ 10 после сходимости.
     void setPfloorPercent(float pct) {
         setPfloor((pct / 100.0f) * 100000.0f);
     }
 
-    // Returns the current pfloor as percentage of the uncertainty scale.
+    // Возвращает текущий pfloor в процентах от масштаба неопределённости.
     float getPfloorPercent() const {
         return (_pfloor / 100000.0f) * 100.0f;
     }
 
-    // Multiply P of all models by factor (diagonal capped at p0Scale = 100000).
-    // Use to manually open up uncertainty when the model is known to be outdated.
+    // Умножает диагональ P всех моделей на factor (ограничено p0Scale=100000).
+    // Вход: factor — множитель; используется для принудительного открытия неопределённости
+    //               когда модель устарела. Внедиагональные элементы не изменяются.
     void boostP(float factor) {
         linearModel.scaleP(factor, 100000.0f);
         quadraticModel.scaleP(factor, 100000.0f);
         cubicModel.scaleP(factor, 100000.0f);
     }
 
-    // Enable auto-boost during calibrationStep():
-    // if the leading model's pre-update residual exceeds threshold (rawVal1 units),
-    // P is multiplied by boostFactor before the update so the Kalman gain grows
-    // and the current sample is absorbed more aggressively.
-    // Diagonal ceiling = p0Scale (100000) prevents P from exceeding initial uncertainty.
-    // Set threshold = 0 to disable (default).
-    void setDriftBoost(float threshold, float boostFactor) {
-        _driftThreshold   = threshold;
-        _driftBoostFactor = boostFactor;
+    // Настраивает автоматический буст P при calibrationStep().
+    // Если остаток ведущей модели (до update) превышает threshold, P умножается на boostFactor
+    // перед шагом RLS — усиление Калмана растёт и модель адаптируется быстрее.
+    // После срабатывания буст блокируется на cooldownSteps шагов: за это время модель
+    // переобучается с повышенным P, после чего, если остаток всё ещё высок, буст повторяется.
+    // Вход: threshold     — порог остатка в единицах rawVal1; 0 = отключено.
+    //       boostFactor   — множитель P при превышении порога.
+    //       cooldownSteps — число шагов блокировки после каждого буста (по умолчанию 5).
+    void setDriftBoost(float threshold, float boostFactor, uint8_t cooldownSteps = 5) {
+        _driftThreshold     = threshold;
+        _driftBoostFactor   = boostFactor;
+        _boostCooldownSteps = cooldownSteps;
     }
 
-    // Accepts only valid EMA alphas strictly in (0, 1).
+    // Устанавливает коэффициенты сглаживания EMA-фильтров (только при EnableDynamic && NumEma>0).
+    // Вход: alphas — массив alpha_i строго ∈ (0,1); count — число элементов.
+    //       Значения вне интервала (0,1) игнорируются. Ненастроенные каналы получают умолчания в startCalibration().
     void setEmaAlphas(const float* alphas, uint8_t count) {
         if constexpr (EnableDynamic && NumEma > 0) {
             uint8_t n = (count < NumEma) ? count : NumEma;
@@ -616,7 +694,11 @@ public:
         }
     }
 
-    // ──────────────────────────── storage ───────────────────────────────────
+    // ──────────────────────────── хранилище ─────────────────────────────────
+
+    // Инициализирует хранилище и загружает сохранённые данные калибровки.
+    // LittleFS: читает /calib.dat; при отсутствии валидных данных записывает начальную структуру.
+    // EEPROM: читает из адреса 0; вызывает _loadData() для валидации.
     void begin() {
 #if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
         FDstat_t stat = _fileData.read();
@@ -632,7 +714,11 @@ public:
 #endif
     }
 
-    // ──────────────────────────── calibration ───────────────────────────────
+    // ──────────────────────────── калибровка ────────────────────────────────
+
+    // Сбрасывает состояние и начинает новую сессию калибровки.
+    // Очищает theta, P, EMA, CMA-статистику, устанавливает нормировку из _preferredNorm*.
+    // Ненастроенным EMA-каналам присваиваются умолчания: alpha_i = 1 - 1/(10*2^i).
     void startCalibration() {
         isCalibrating     = true;
         samplesCount      = 0;
@@ -647,9 +733,10 @@ public:
         _normScale        = (_preferredNormScale > 1e-4f) ? _preferredNormScale : 0.0f;
         _emaInitialized   = false;
         _isLoaded         = false;
+        _boostCooldown    = 0;
         _resetModels();
 
-        // Guard: if setEmaAlphas() was never called (alphas still 0), fill with sensible defaults.
+        // Если setEmaAlphas() не вызывался (alphas==0), заполнить разумными умолчаниями:
         // alpha_i = 1 - 1/(10*2^i) → 0.9, 0.95, 0.975, …
         if constexpr (EnableDynamic && NumEma > 0) {
             for (uint8_t i = 0; i < NumEma; i++)
@@ -657,13 +744,18 @@ public:
                     _emaAlphas[i] = 1.0f - 1.0f / float(10u << i);
         }
 
-        // Guard: ensure at least 1 sample contributes to CMA.
+        // Инвариант: минимум один шаг должен попасть в CMA после прогрева
         if (_minSamples > 0 && _cmaWarmup >= _minSamples) {
             uint32_t w = _minSamples - 1;
             _cmaWarmup = (w > 255u) ? uint8_t(255) : uint8_t(w);
         }
     }
 
+    // Добавляет одну точку в калибровочную выборку и обновляет модели.
+    // Вход: val1 — «сырое» показание сенсора; val2 — вторичная переменная (например, температура).
+    // Пропускает точку если: !isCalibrating, NaN/Inf, или |Δval2| < _val2Threshold.
+    // Последовательность: адаптация λ → расширение нормировки → обновление EMA →
+    //                     сборка признаков → предсказание (leave-one-out) → авто-буст → update → CMA.
     void calibrationStep(float val1, float val2) {
         if (!isCalibrating) return;
         if (isnan(val1) || isinf(val1) || isnan(val2) || isinf(val2)) return;
@@ -684,18 +776,26 @@ public:
 
         T error = T(val1) - referenceVal1;
 
-        // Pre-update prediction errors (leave-one-out estimate for model selection)
+        // Ошибки предсказания ДО update (leave-one-out оценка для выбора модели)
         float eLin  = fabsf(float(error) - float(linearModel.predict(xL)));
         float eQuad = fabsf(float(error) - float(quadraticModel.predict(xQ)));
         float eCub  = fabsf(float(error) - float(cubicModel.predict(xC)));
 
-        // Auto-boost: if the current CMA-best model's residual exceeds the threshold,
-        // inflate P before this update so the Kalman gain grows and the model adapts faster.
-        // boostP() caps diagonal at p0Scale (100000) so P never exceeds initial uncertainty.
+        // Авто-буст: если остаток ведущей модели превышает порог — раздуваем P перед update,
+        // чтобы усиление Калмана выросло и текущая точка поглотилась агрессивнее.
+        // Кулдаун предотвращает рэтчет P к потолку при нескольких подряд превышениях:
+        // модель обновляется N шагов с повышенным P, затем снова проверяется остаток.
         if (_driftThreshold > 0.0f && samplesCount > _cmaWarmup) {
-            uint8_t m = _liveModelType();
-            float leadErr = (m == 0) ? eLin : (m == 1) ? eQuad : eCub;
-            if (leadErr > _driftThreshold) boostP(_driftBoostFactor);
+            if (_boostCooldown > 0) {
+                _boostCooldown--;
+            } else {
+                uint8_t m = _liveModelType();
+                float leadErr = (m == 0) ? eLin : (m == 1) ? eQuad : eCub;
+                if (leadErr > _driftThreshold) {
+                    boostP(_driftBoostFactor);
+                    _boostCooldown = _boostCooldownSteps;
+                }
+            }
         }
 
         linearModel.update(xL, error);
@@ -703,9 +803,8 @@ public:
         cubicModel.update(xC, error);
 
         samplesCount++;
-        // Skip first _cmaWarmup samples from model-selection scoring:
-        // theta≈0 makes all models predict equally poorly before convergence.
-        // Training (update above) still happens from sample 1.
+        // Первые _cmaWarmup шагов пропускаются в CMA: theta≈0 → все модели предсказывают одинаково плохо.
+        // Обучение (update выше) идёт с первого шага.
         if (samplesCount > _cmaWarmup) {
             float n = float(samplesCount - _cmaWarmup);
             linearErrorCMA    += (eLin  - linearErrorCMA)    / n;
@@ -716,6 +815,9 @@ public:
         _lastVal2 = val2;
     }
 
+    // Завершает калибровку: выбирает лучшую модель, перепроецирует в финальную нормировку, сохраняет во flash/EEPROM.
+    // Выход: true — калибровка успешна; false — недостаточно шагов (<_minSamples) или размах val2 (<_minDelta).
+    // После успеха compensate() использует bestModel в нормировке centred по [min_val2, max_val2].
     bool finishCalibration() {
         if (!isCalibrating) return false;
         isCalibrating = false;
@@ -724,19 +826,19 @@ public:
         if (delta < _minDelta)          return false;
 
         _calcBestModel();
-        _savedUncertainty = getUncertainty(); // capture live P before normZero/Scale update
+        _savedUncertainty = getUncertainty(); // снимаем живое P до обновления нормировки
 
         _calibData.calibrated   = true;
         _calibData.modelType    = bestModel;
-        // Save the full theta vector; cap at 6 to stay within params[6].
+        // Сохранение полного вектора theta; обрезка до 6 (размер params[6])
         uint8_t nSave = (bestModel == 0) ? uint8_t(LN) : (bestModel == 1) ? uint8_t(QN) : uint8_t(CN);
         if (nSave > 6) nSave = 6;
         _calibData.numParams    = nSave;
         _calibData.minCalibVal2 = min_val2;
         _calibData.maxCalibVal2 = max_val2;
 
-        // Reproject all model thetas from training normalisation to final (min/max-centred) coords.
-        // Must happen BEFORE updating _normZero/_normScale so we know the old scale.
+        // Перепроецирование theta из тренировочной нормировки в финальную (центрированную по min/max).
+        // Должно произойти ДО обновления _normZero/_normScale, чтобы знать старый масштаб.
         float fin_zero  = (min_val2 + max_val2) * 0.5f;
         float fin_scale = (max_val2 - min_val2) * 0.5f;
         if (fin_scale < 1e-4f) fin_scale = 1e-4f;
@@ -780,11 +882,12 @@ public:
         return true;
     }
 
-    // ──────────────────────────── compensation ───────────────────────────────
+    // ──────────────────────────── компенсация ───────────────────────────────
 
-    // Live compensation — also advances EMA state (correct for real-time use).
-    // During calibration: uses the CMA-best live model (linear during warmup).
-    // After finishCalibration() / load: uses the stored bestModel.
+    // Вычисляет компенсированное значение rawVal1 и обновляет EMA-состояние (для работы в реальном времени).
+    // Вход: rawVal1 — «сырое» показание сенсора; val2 — текущая вторичная переменная.
+    // Выход: rawVal1 - ошибка_модели; возвращает rawVal1 без изменений при NaN/Inf или отсутствии калибровки.
+    // Во время калибровки использует CMA-лучшую живую модель; после finishCalibration() — bestModel.
     float compensate(float rawVal1, float val2) {
         if (isnan(val2) || isinf(val2)) return rawVal1;
 
@@ -815,9 +918,10 @@ public:
         return float(T(rawVal1) - pred);
     }
 
-    // Read-only compensation — uses current EMA snapshot without advancing it.
-    // Useful for probing the model at a hypothetical val2 without side-effects.
-    // During calibration: same live-model selection as compensate().
+    // Вычисляет компенсированное значение без изменения EMA-состояния (только чтение).
+    // Вход: rawVal1 — «сырое» показание сенсора; val2 — значение вторичной переменной.
+    // Выход: rawVal1 - ошибка_модели; аналогично compensate(), но не меняет внутреннее состояние.
+    // Используется для зондирования модели в гипотетической точке val2 без побочных эффектов.
     float getCompensation(float rawVal1, float val2) const {
         if (isnan(val2) || isinf(val2)) return rawVal1;
 
@@ -845,7 +949,10 @@ public:
         return float(T(rawVal1) - pred);
     }
 
-    // ──────────────────────────── reset ─────────────────────────────────────
+    // ──────────────────────────── сброс ─────────────────────────────────────
+
+    // Полностью сбрасывает калибровку: очищает _calibData, theta, P, всё состояние.
+    // Записывает сброшенную структуру во flash/EEPROM. После вызова isModelLoaded() = false.
     void resetCalibration() {
         _calibData        = ModelEEData{};
         isCalibrating     = false;
@@ -871,11 +978,20 @@ public:
 #endif
     }
 
-    // ──────────────────────────── queries ───────────────────────────────────
+    // ──────────────────────────── запросы ────────────────────────────────────
+
+    // Возвращает true если загружена валидная калибровка (после begin() или loadFromData()).
     bool    isModelLoaded()     const { return _calibData.calibrated; }
+
+    // Возвращает true если выполняется сессия калибровки (после startCalibration(), до finish/reset).
     bool    isCalibratingMode() const { return isCalibrating; }
+
+    // Возвращает индекс выбранной модели: 0=линейная, 1=квадратичная, 2=кубическая.
     uint8_t getBestModel()      const { return bestModel; }
 
+    // Возвращает текущую глобальную неопределённость (0..100%).
+    // При _isLoaded — сохранённое значение момента finishCalibration().
+    // Иначе — trace(P) лучшей живой модели, нормированный к _p0Scale.
     float getUncertainty() const {
         if (_isLoaded) return _savedUncertainty;
         uint8_t m = _liveModelType();
@@ -884,7 +1000,9 @@ public:
         return           cubicModel.getUncertainty();
     }
 
-    // Point-wise predictive uncertainty at an arbitrary val2 using the current best model.
+    // Возвращает точечную неопределённость модели в произвольной точке val2.
+    // Вход: val2 — значение вторичной переменной.
+    // Выход: (x^T P x)/(p0Scale*||x||^2)*100% для bestModel; 100% если нет калибровки или нормировки.
     float getUncertaintyAt(float val2) const {
         if (_normScale <= 0.0f || !_calibData.calibrated) return 100.0f;
         float t = normVal2(val2);
@@ -895,29 +1013,41 @@ public:
         return                     cubicModel.getUncertaintyAt(xC);
     }
 
-    // ── Calibration diagnostics ──────────────────────────────────────────────
+    // ── Диагностика калибровки ───────────────────────────────────────────────
+
+    // Возвращает количество принятых шагов calibrationStep() в текущей сессии.
     uint32_t getNumSamples()       const { return samplesCount; }
+
+    // Возвращает размах val2 (max - min) за текущую сессию калибровки.
     float    getCalibrationDelta() const { return delta; }
 
+    // Возвращает диапазон val2, охваченный при калибровке.
+    // Вход: outMin, outMax — выходные параметры (по ссылке).
+    // При наличии сохранённой калибровки — из _calibData; иначе из текущей сессии.
     void getCalibrationRange(float& outMin, float& outMax) const {
         outMin = (_calibData.calibrated) ? _calibData.minCalibVal2 : min_val2;
         outMax = (_calibData.calibrated) ? _calibData.maxCalibVal2 : max_val2;
     }
 
+    // Возвращает true если val2 находится в пределах диапазона калибровки.
+    // Вход: val2 — проверяемое значение. Возвращает false если нет валидной калибровки.
     bool isInCalibrationRange(float val2) const {
         if (!_calibData.calibrated) return false;
         return (val2 >= _calibData.minCalibVal2 && val2 <= _calibData.maxCalibVal2);
     }
 
+    // Возвращает накопленные CMA-ошибки трёх моделей для диагностики выбора модели.
+    // Выход: lin, quad, cub — средние абсолютные ошибки по принятым шагам после прогрева.
     void getCmaErrors(float& lin, float& quad, float& cub) const {
         lin  = linearErrorCMA;
         quad = quadraticErrorCMA;
         cub  = cubicErrorCMA;
     }
 
-    // Override model selection after finishCalibration() — all three models are trained
-    // and can be switched freely.  Calling after loadFromData() is only safe when forcing
-    // to the same model that was loaded (other models have theta=0).
+    // Принудительно переключает активную модель после finishCalibration().
+    // Вход: modelType — 0/1/2. При успехе сохраняет выбор во flash/EEPROM.
+    // Выход: false при некорректном modelType, во время калибровки, без данных,
+    //        или при попытке переключить на другую модель после loadFromData() (_isLoaded).
     bool forceModel(uint8_t modelType) {
         if (modelType > 2)           return false;
         if (isCalibrating)           return false;
@@ -946,8 +1076,12 @@ public:
         return true;
     }
 
+    // Возвращает ссылку на текущую структуру данных калибровки (только чтение).
     const ModelEEData& getSavedData() const { return _calibData; }
 
+    // Загружает калибровочные данные из внешней структуры (например, полученной по сети).
+    // Вход: d — структура ModelEEData; проходит те же валидационные проверки что и _loadData().
+    // Выход: true — данные корректны и загружены; false — данные не прошли валидацию.
     bool loadFromData(const ModelEEData& d) {
         if (d.version != 2)                        return false;
         if (!d.calibrated)                         return false;
@@ -964,7 +1098,10 @@ public:
         return _loadData();
     }
 
-    // ──────────────────────────── debug output ───────────────────────────────
+    // ──────────────────────────── отладочный вывод ───────────────────────────
+
+    // Выводит параметры сохранённой модели в _debugOut (тип, коэффициенты, нормировку, диапазон val2).
+    // Не выполняет никаких действий если _debugOut==nullptr или нет данных калибровки.
     void printSavedModelData() {
         if (!_debugOut) return;
         if (!_calibData.calibrated) {
@@ -998,10 +1135,11 @@ public:
     }
 
 #if CALIB_STORAGE != CALIB_STORAGE_MANUAL
-    // Returns de-normalised polynomial string for display (e.g. VK messages).
-    // EMA coefficients (theta[1..numParams-2] for EMA models) are not shown;
-    // only the pure polynomial terms (slope/curvature and bias) are displayed.
-    // urlEncoded=true escapes '+' as '%2B' for safe URL form encoding.
+    // Возвращает денормализованное строковое представление полинома в физических координатах.
+    // Вход: urlEncoded — если true, '+' заменяется на '%2B' для безопасной передачи в URL.
+    // Выход: строка вида "0.0123t+1.456" (линейная), "...t^2..." (квадратичная), "...t'^3..." (кубическая).
+    // EMA-коэффициенты не отображаются — только чистые полиномиальные члены.
+    // Возвращает "No data" (или "No%20data") если нет валидной калибровки.
     String getPolynomialString(bool urlEncoded = false) const {
         if (!_calibData.calibrated)
             return String(urlEncoded ? "No%20data" : "No data");
@@ -1010,7 +1148,7 @@ public:
         float Z = _normZero;
         float S = (_normScale > 1e-4f) ? _normScale : 1.0f;
         uint8_t type = _calibData.modelType;
-        // Bias is always stored at the last saved parameter index.
+        // Смещение всегда хранится на последнем сохранённом индексе params
         float bias = p[_calibData.numParams - 1];
 
         char buf[100] = {};
@@ -1030,7 +1168,7 @@ public:
                      (B >= 0.0f ? '+' : '-'), fabsf(B),
                      (C >= 0.0f ? '+' : '-'), fabsf(C));
         } else {
-            // Cubic: normalised-space form (t' = (t-Z)/S); bias at last param index.
+            // Кубическая: нормализованная форма (t' = (t-Z)/S); смещение на последнем индексе
             snprintf(buf, sizeof(buf), "%.3ft'^3%c%.3ft'^2%c%.3ft'%c%.3f",
                      p[0],
                      (p[1]>=0.0f?'+':'-'), fabsf(p[1]),
