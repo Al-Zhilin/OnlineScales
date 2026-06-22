@@ -202,7 +202,9 @@ void loop() {
                 //external_request.force_send = false;        // сбрасываем force_send: иначе он повиснет незакрытым и сработает в следующем цикле как внеплановая отправка данных
                 LOG("Calibration started");
 
-                String msg = "Переключатель переведен в режим калибровки";
+                String msg = "Переключатель переведен в режим калибровки%0A";
+                msg += "Эталонный вес: ";
+                msg += sensorData.weightGr;
                 modemPayload = "peer_ids=";
                 modemPayload += VK_PEER_ID;
                 modemPayload += "&random_id=";

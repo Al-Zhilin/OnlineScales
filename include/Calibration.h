@@ -229,7 +229,7 @@ private:
     static constexpr uint8_t _EABUF = (_NE > 0) ? _NE : 1; // размер буфера EMA (минимум 1 для корректной компиляции)
 
     // ── Общие состояния ─────────────────────────────────────────────────────
-    bool _isBegined = false;
+    //bool _isBegined = false;
 
     // ── Модели ──────────────────────────────────────────────────────────────
     RLSModel<LN, T> linearModel;      // линейная модель: y = a*t + b (+ EMA-члены)
@@ -703,7 +703,6 @@ public:
     // LittleFS: читает /calib.dat; при отсутствии валидных данных записывает начальную структуру.
     // EEPROM: читает из адреса 0; вызывает _loadData() для валидации.
     void begin(T RefVal1) {
-        _isBegined = true;
         referenceVal1 = RefVal1;
         #if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
                 FDstat_t stat = _fileData.read();
