@@ -26,6 +26,15 @@ struct ModificationRequests {
     bool start_calibration = false;
     bool end_calibration = false;
     bool force_send = true;
+    bool calib_check_resume = false;        // start_calibration поднят на СТАРТЕ платы (InputHandler::begin): можно продолжить незавершённую калибровку из RTC-снимка. При ручном переключении в рантайме остаётся false → калибровка с нуля
+};
+
+// Причина программной перезагрузки (ESP.restart), сохраняется в RTC перед вызовом и печатается в мета-теге ВК.
+enum class RebootCause : uint8_t {
+    NONE         = 0,
+    LITTLEFS_FAIL = 1,                      // не смонтировалась файловая система (теперь без ребута — но флаг ставим для телеметрии)
+    SENSORS_DOWN  = 2,                      // датчики не отвечали дольше допустимого
+    COMM_ERRORS   = 3,                      // накопились подряд идущие ошибки связи
 };
 
 enum class LedModes : uint8_t {

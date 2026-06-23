@@ -38,6 +38,37 @@ struct ModelEEData {
 };
 
 
+//  Маркер валидности снимка живого состояния калибровки (RTC-чекпоинт)
+inline constexpr uint32_t CALIB_LIVE_MAGIC = 0xCA11B5AAu;
+
+//  CalibLiveState — POD-снимок ВСЕГО незавершённого состояния калибровки для хранения в RTC-памяти.
+//    Позволяет продолжить калибровку с того же места после программной перезагрузки (ESP.restart),
+//    сна или WDT. НЕ переживает полное обесточивание (RTC обнуляется) — это осознанный компромисс.
+//    Размеры theta/P зафиксированы по максимуму (6 и 6×6=36), реально используется LN/QN/CN ≤ 6.
+struct CalibLiveState {
+    uint32_t magic            = 0;       // CALIB_LIVE_MAGIC = снимок валиден
+    bool     isCalibrating    = false;   // была ли активна калибровка в момент снимка
+    uint8_t  bestModel        = 0;
+    uint32_t samplesCount     = 0;
+    double   referenceVal1    = 0.0;     // эталон val1 (целевая точка без дрейфа)
+    float    max_val2         = 0.0f;
+    float    min_val2         = 0.0f;
+    float    delta            = 0.0f;
+    float    linearErrorCMA   = 0.0f;
+    float    quadraticErrorCMA = 0.0f;
+    float    cubicErrorCMA    = 0.0f;
+    float    normZero         = 0.0f;
+    float    normScale        = 0.0f;
+    float    lastVal2         = 0.0f;    // хранит _lastVal2 (NAN кодируется как есть)
+    float    emaState[4]      = {};      // до NumEma значений EMA в нормированных координатах
+    bool     emaInitialized   = false;
+    uint8_t  boostCooldown    = 0;
+    float    linTheta[6]      = {};   double linP[36]  = {};
+    float    quadTheta[6]     = {};   double quadP[36] = {};
+    float    cubTheta[6]      = {};   double cubP[36]  = {};
+};
+
+
 //  RLSModel<N, T> — одна рекуррентная регрессионная модель с N признаками
 //    N — размерность вектора признаков
 //    T — тип вычислений (рекомендуется double)
@@ -101,6 +132,23 @@ public:
 
     // Возвращает указатель на внутренний вектор коэффициентов theta (только чтение).
     const float* getTheta() const { return theta; }
+
+    // Копирует ковариационную матрицу P в плоский буфер построчно (N*N элементов).
+    // Вход: dst — буфер длиной не менее N*N. Используется для RTC-чекпоинта живого состояния.
+    void getP(T* dst) const {
+        for (uint16_t i = 0; i < N; i++)
+            for (uint16_t j = 0; j < N; j++)
+                dst[i * N + j] = P[i][j];
+    }
+
+    // Восстанавливает ковариационную матрицу P из плоского построчного буфера (N*N элементов).
+    // Вход: src — буфер длиной не менее N*N; nullptr игнорируется. Парный к getP().
+    void setP(const T* src) {
+        if (!src) return;
+        for (uint16_t i = 0; i < N; i++)
+            for (uint16_t j = 0; j < N; j++)
+                P[i][j] = src[i * N + j];
+    }
 
     // Возвращает глобальную неопределённость как % от начального масштаба (0..100%).
     // Вычисляется как trace(P)/(N*_p0Scale)*100. Ограничена 100%: _tryReproject() может
@@ -986,6 +1034,74 @@ public:
         EEPROM.put(0, _calibData);
         EEPROM.commit();
 #endif
+    }
+
+    // ──────────────────────────── RTC-чекпоинт живого состояния ──────────────
+
+    // Сериализует ВСЁ текущее состояние калибровки в POD-снимок (для хранения в RTC-памяти).
+    // Вызывать дёшево после каждого calibrationStep(); снимок переживает ESP.restart()/сон/WDT.
+    void saveLiveState(CalibLiveState& s) const {
+        s.magic             = CALIB_LIVE_MAGIC;
+        s.isCalibrating     = isCalibrating;
+        s.bestModel         = bestModel;
+        s.samplesCount      = samplesCount;
+        s.referenceVal1     = double(referenceVal1);
+        s.max_val2          = max_val2;
+        s.min_val2          = min_val2;
+        s.delta             = delta;
+        s.linearErrorCMA    = linearErrorCMA;
+        s.quadraticErrorCMA = quadraticErrorCMA;
+        s.cubicErrorCMA     = cubicErrorCMA;
+        s.normZero          = _normZero;
+        s.normScale         = _normScale;
+        s.lastVal2          = _lastVal2;
+        for (uint8_t i = 0; i < 4; i++) s.emaState[i] = (i < _EABUF) ? _emaState[i] : 0.0f;
+        s.emaInitialized    = _emaInitialized;
+        s.boostCooldown     = _boostCooldown;
+
+        const float* lt = linearModel.getTheta();
+        const float* qt = quadraticModel.getTheta();
+        const float* ct = cubicModel.getTheta();
+        for (int i = 0; i < 6; i++) {
+            s.linTheta[i]  = (i < LN) ? lt[i] : 0.0f;
+            s.quadTheta[i] = (i < QN) ? qt[i] : 0.0f;
+            s.cubTheta[i]  = (i < CN) ? ct[i] : 0.0f;
+        }
+        linearModel.getP(s.linP);
+        quadraticModel.getP(s.quadP);
+        cubicModel.getP(s.cubP);
+    }
+
+    // Восстанавливает состояние калибровки из RTC-снимка и продолжает сессию (isCalibrating=true).
+    // Выход: true — снимок валиден (правильный magic и калибровка была активна) и восстановлен; false — иначе.
+    // Параметры pfloor/EMA-alpha/p0Scale должны быть уже применены через конфигурацию (как в setup()).
+    bool restoreLiveState(const CalibLiveState& s) {
+        if (s.magic != CALIB_LIVE_MAGIC) return false;
+        if (!s.isCalibrating)            return false;
+
+        isCalibrating     = true;
+        bestModel         = s.bestModel;
+        samplesCount      = s.samplesCount;
+        referenceVal1     = T(s.referenceVal1);
+        max_val2          = s.max_val2;
+        min_val2          = s.min_val2;
+        delta             = s.delta;
+        linearErrorCMA    = s.linearErrorCMA;
+        quadraticErrorCMA = s.quadraticErrorCMA;
+        cubicErrorCMA     = s.cubicErrorCMA;
+        _normZero         = s.normZero;
+        _normScale        = s.normScale;
+        _lastVal2         = s.lastVal2;
+        if constexpr (EnableDynamic && NumEma > 0)
+            for (uint8_t i = 0; i < NumEma; i++) _emaState[i] = s.emaState[i];
+        _emaInitialized   = s.emaInitialized;
+        _boostCooldown    = s.boostCooldown;
+        _isLoaded         = false;
+
+        linearModel.setTheta(s.linTheta);     linearModel.setP(s.linP);
+        quadraticModel.setTheta(s.quadTheta); quadraticModel.setP(s.quadP);
+        cubicModel.setTheta(s.cubTheta);      cubicModel.setP(s.cubP);
+        return true;
     }
 
     // ──────────────────────────── запросы ────────────────────────────────────

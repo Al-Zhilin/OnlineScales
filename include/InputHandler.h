@@ -20,6 +20,7 @@ class InputHandler {
       butt = new uButton(butt_pin);
       if (switch_state = !digitalRead(switch_pins)) {        // начальное положение переключателя режима работы
         external_request.start_calibration = true;          // обрабатывается в MEASURE после compensator.begin()
+        external_request.calib_check_resume = true;         // вход в калибровку на старте платы → проверяем RTC-снимок на возможность продолжить незавершённую сессию
       }
     }
 
