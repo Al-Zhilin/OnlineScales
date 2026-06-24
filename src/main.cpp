@@ -180,6 +180,12 @@ void setup() {
     compensator.setEmaAlphas(ema_alphas, 2);
     compensator.setDriftBoost(200, 100);
 
+    // Поднимаем сохранённую модель из flash на КАЖDOM старте — иначе в обычном режиме (без входа
+    // в калибровку) compensate() молча отдаёт сырой вес: begin() раньше звался только при старте
+    // калибровки. referenceVal1 здесь не важен (на compensate() не влияет); при входе в калибровку
+    // begin(weightGr) перезадаст его, а restoreLiveState (RTC-resume) перезапишет состояние поверх.
+    compensator.begin(0.0f);
+
     restart_reason = (uint8_t)esp_reset_reason();
 
     esp_task_wdt_config_t twdt_config = {              // настраиваем конфиг для WDT таймера
