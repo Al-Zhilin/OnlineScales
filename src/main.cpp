@@ -73,7 +73,7 @@ String buildReportMessage(TempState t_state) {
 
     // При ошибке датчика температуры не компенсируем вес некорректным значением — отправляем сырое.
     msg += "Текущий вес: ";
-    msg += (t_state != TempState::ERROR && !compensator.isCalibratingMode()) ? String(compensator.compensate(sensorData.weightGr, sensorData.tempC) / 1000.0f, 2) : String(sensorData.weightKg, 2);
+    msg += (t_state != TempState::ERROR && !compensator.isCalibratingMode()) ? String(compensator.getCompensation(sensorData.weightGr, sensorData.tempC) / 1000.0f, 2) : String(sensorData.weightKg, 2);
     msg += " кг%0A";
 
     msg += "Температура: " + String(sensorData.tempC, 1) + " °C%0A";
@@ -294,6 +294,8 @@ void loop() {
                 }
             } else {
                 sensor_error_count = 0;
+                if (!compensator.isCalibratingMode())       // важно! частота вызова compensate должна быть такой же, как и частота вызова calibrationStep() при калибровке!
+                    compensator.compensate(sensorData.weightGr, sensorData.tempC);                                        // (корректная работа EMA признаков при включении)
             }
 
             batteryVoltage = filtrateVolts(analogReadMilliVolts(BATT_PIN)) / 1000.0f * DIVIDER_RATIO;            // читаем напряжение с батареи, фильтруем простым EMA с адаптивным коэффициентом

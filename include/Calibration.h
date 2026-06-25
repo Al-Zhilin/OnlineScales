@@ -755,18 +755,24 @@ public:
         #if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
                 FDstat_t stat = _fileData.read();
                 if (stat == FD_READ) {
-                    _loadData();
-                } else if (stat == FD_WRITE || stat == FD_ADD) {
-                    // Файла не было → создан с дефолтами. Загружать нечего.
+                    if (!_loadData()) {
+                        // _fileData.read() прочитал _calibData из флеша (calibrated=true),
+                        // но _loadData() забраковал данные: несовпадение numParams
+                        // (LN/QN/CN изменился при смене NumEma/EnableDynamic), NaN в params,
+                        // или другой формат. Без сброса compensate() увидит calibrated=true,
+                        // вычислит predict()=0 (theta не установлен) и молча вернёт сырой вес.
+                        _calibData = ModelEEData{};
+                        if (_debugOut) _debugOut->println(
+                            "[Calibration] WARNING: model in flash is incompatible "
+                            "(numParams/format mismatch) — re-calibration required");
+                    }
                 }
-                // FD_FS_ERR / FD_FILE_ERR / прочие сбои: флеш не трогаем.
-                // Ранее здесь был безусловный _fileData.write(), который при несовпадении
-                // размера структуры (например, после добавления поля) затирал сохранённую
-                // калибровку дефолтным _calibData{calibrated=false}.
+                // FD_WRITE/FD_ADD: файла не было, создан с дефолтами, загружать нечего.
+                // FD_FS_ERR/FD_FILE_ERR: флеш недоступен, не трогаем ничего.
         #elif CALIB_STORAGE == CALIB_STORAGE_EEPROM
                 EEPROM.begin(sizeof(ModelEEData));
                 EEPROM.get(0, _calibData);
-                _loadData();
+                if (!_loadData()) _calibData = ModelEEData{};
         #endif
     }
 
@@ -929,6 +935,19 @@ public:
                                             : cubicModel.getTheta();
         for (uint8_t i = 0; i < 6; i++)
             _calibData.params[i] = (i < nSave) ? src[i] : 0.0f;
+
+        // Не сохранять численно расходящуюся модель: NaN/Inf в theta возникает при
+        // переполнении ковариационной матрицы P (тысячи обновлений + boostP).
+        // Такая модель всё равно не загрузится (_loadData() отклонит её по NaN-чеку),
+        // так что сохранение только введёт в заблуждение.
+        for (uint8_t i = 0; i < nSave; i++) {
+            if (isnan(_calibData.params[i]) || isinf(_calibData.params[i])) {
+                if (_debugOut) _debugOut->println(
+                    F("[Calibration] ERROR: model diverged (NaN/Inf in theta) — not saving"));
+                isCalibrating = false;
+                return false;
+            }
+        }
         _calibData.savedUncertainty = _savedUncertainty;
 
 #if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
@@ -1238,6 +1257,12 @@ public:
             _debugOut->println(F("Calibration: no data saved"));
             return;
         }
+        // Критически важно: _calibData — данные из флеша (могут быть).
+        // _isLoaded — показывает, удалось ли ЗАГРУЗИТЬ theta в живую модель.
+        // Если _isLoaded=false, compensate() будет возвращать сырой вес несмотря на calibrated=true!
+        _debugOut->print(F("Loaded into live model: "));
+        _debugOut->println(_isLoaded ? F("YES") : F("NO  <-- compensation inactive!"));
+
         static const char* names[] = {"Linear", "Quadratic", "Cubic"};
         _debugOut->print(F("Model: "));
         if (_calibData.modelType < 3) _debugOut->println(names[_calibData.modelType]);
