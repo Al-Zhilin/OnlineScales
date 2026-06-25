@@ -1,4 +1,4 @@
-//#define USE_LOG Serial                                // удобный отладчик через Serial (закомментируй эту строку чтобы отключить)
+#define USE_LOG Serial                                // удобный отладчик через Serial (закомментируй эту строку чтобы отключить)
 
 #define SCL_PIN 18                                      // SCL пин HX711
 #define DT_PIN 8                                        // DT пин HX711

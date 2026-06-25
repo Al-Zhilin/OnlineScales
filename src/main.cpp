@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <esp_task_wdt.h>
 #include <esp_sleep.h>
+#include <Preferences.h>
 #include "Enumerations.h"
 #include <LittleFS.h>
 #include <FileData.h>
@@ -78,7 +79,11 @@ String buildReportMessage(TempState t_state) {
     msg += "Температура: " + String(sensorData.tempC, 1) + " °C%0A";
 
     if (compensator.isCalibratingMode()) {
-        msg += "Вес с компенсацией: " + String(compensator.getCompensation(sensorData.weightGr, sensorData.tempC) / 1000.0f, 2) + " кг%0A";
+        float comp_kg = compensator.getCompensation(sensorData.weightGr, sensorData.tempC) / 1000.0f;
+        float ref_kg  = compensator.getReferenceVal1() / 1000.0f;
+        int   diff_g  = int((comp_kg - ref_kg) * 1000.0f + 0.5f);
+        msg += "Вес с компенсацией: " + String(comp_kg, 2) + " / " + String(ref_kg, 2) + " кг";
+        msg += " (" + String(diff_g >= 0 ? "+" : "") + String(diff_g) + " г)%0A";
         msg += "Неуверенность модели: " + String(compensator.getUncertainty(), 1) + "%25%0A";
         msg += "Точек: " + String(compensator.getNumSamples()) + ", диапазон: " + String(compensator.getCalibrationDelta(), 1) + " C%0A";
     }
@@ -155,13 +160,46 @@ void setup() {
     led.begin();
     tempSensor.begin();
 
-    // LittleFS: несколько попыток монтирования. НЕ перезагружаемся при провале (иначе boot-loop,
-    // который и уничтожает калибровку) — переходим в деградированный режим без долговременного хранения.
+    // LittleFS: НИКОГДА не форматируем автоматически после первой инициализации.
+    //
+    // Логика: LittleFS — журналируемая ФС, устойчивая к отключению питания по дизайну.
+    // Единственный легитимный случай сбоя begin(false) — партиция ни разу не инициализировалась
+    // (чистый флеш). Это фиксируем флагом lfs_ok в NVS (отдельная партиция, не LittleFS).
+    //
+    // После первой инициализации: только begin(false). Если он всё равно падает —
+    // аппаратная проблема; форматирование не поможет и лишь уничтожит калибровку.
     bool fs_ok = false;
     for (int i = 0; i < 3 && !fs_ok; i++) {
-        fs_ok = LittleFS.begin(true);                  // true = форматировать при первом сбое
-        if (!fs_ok) { Serial.println("LittleFS mount failed, retrying..."); delay(300); }
+        fs_ok = LittleFS.begin(false);
+        if (!fs_ok && i < 2) delay(200);
     }
+
+    if (!fs_ok) {
+        Preferences prefs;
+        prefs.begin("_sys", true);                     // read-only, не создаёт namespace если нет
+        bool lfs_was_init = prefs.getBool("lfs", false);
+        prefs.end();
+
+        if (!lfs_was_init) {
+            // Первый запуск на чистом флеше — форматируем ровно один раз
+            Serial.println("LittleFS: first-time init, formatting...");
+            if (LittleFS.format() && LittleFS.begin(false)) {
+                fs_ok = true;
+                Preferences prefs_w;
+                prefs_w.begin("_sys", false);
+                prefs_w.putBool("lfs", true);          // больше не форматируем никогда
+                prefs_w.end();
+                Serial.println("LittleFS: initialized OK");
+            } else {
+                Serial.println("LittleFS: format failed — hardware issue?");
+            }
+        } else {
+            // ФС инициализирована, но не монтируется — аппаратная проблема.
+            // Форматирование только уничтожит данные без шанса восстановления.
+            Serial.println("LittleFS: mount failed after prior init — hardware issue, running degraded");
+        }
+    }
+
     if (!fs_ok) {
         rtc_problem_mask |= (1 << 7);                  // флаг сбоя ФС в телеметрию (бит 7)
         Serial.println("WARNING: LittleFS unavailable — running degraded (no persistence)");

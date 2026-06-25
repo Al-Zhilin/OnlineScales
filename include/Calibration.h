@@ -756,9 +756,13 @@ public:
                 FDstat_t stat = _fileData.read();
                 if (stat == FD_READ) {
                     _loadData();
-                } else {
-                    _fileData.write();
+                } else if (stat == FD_WRITE || stat == FD_ADD) {
+                    // Файла не было → создан с дефолтами. Загружать нечего.
                 }
+                // FD_FS_ERR / FD_FILE_ERR / прочие сбои: флеш не трогаем.
+                // Ранее здесь был безусловный _fileData.write(), который при несовпадении
+                // размера структуры (например, после добавления поля) затирал сохранённую
+                // калибровку дефолтным _calibData{calibrated=false}.
         #elif CALIB_STORAGE == CALIB_STORAGE_EEPROM
                 EEPROM.begin(sizeof(ModelEEData));
                 EEPROM.get(0, _calibData);
@@ -928,7 +932,8 @@ public:
         _calibData.savedUncertainty = _savedUncertainty;
 
 #if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
-        _fileData.updateNow();
+        // write() создаёт файл если его нет; updateNow() тихо провалился бы при отсутствии файла
+        _fileData.write();
 #elif CALIB_STORAGE == CALIB_STORAGE_EEPROM
         EEPROM.put(0, _calibData);
         EEPROM.commit();
@@ -1025,7 +1030,7 @@ public:
         _resetModels();
 
 #if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
-        _fileData.updateNow();
+        _fileData.write();
 #elif CALIB_STORAGE == CALIB_STORAGE_EEPROM
         EEPROM.put(0, _calibData);
         EEPROM.commit();
@@ -1140,6 +1145,9 @@ public:
     // Возвращает количество принятых шагов calibrationStep() в текущей сессии.
     uint32_t getNumSamples()       const { return samplesCount; }
 
+    // Возвращает эталонный вес val1, принятый за «ноль дрейфа» в текущей сессии калибровки.
+    float    getReferenceVal1()    const { return float(referenceVal1); }
+
     // Возвращает размах val2 (max - min) за текущую сессию калибровки.
     float    getCalibrationDelta() const { return delta; }
 
@@ -1190,7 +1198,7 @@ public:
         _savedUncertainty = _calibData.savedUncertainty;
 
 #if CALIB_STORAGE == CALIB_STORAGE_LITTLEFS
-        _fileData.updateNow();
+        _fileData.write();
 #elif CALIB_STORAGE == CALIB_STORAGE_EEPROM
         EEPROM.put(0, _calibData);
         EEPROM.commit();
