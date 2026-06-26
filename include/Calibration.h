@@ -27,7 +27,7 @@
 //  Данные калибровки для сохранения во flash / EEPROM
 
 struct ModelEEData {
-    uint8_t  version          = 2;       // версия формата; увеличивать при изменении раскладки структуры
+    uint8_t  version          = 3;       // версия формата; увеличивать при изменении раскладки структуры
     uint8_t  modelType        = 0;       // тип модели: 0=линейная, 1=квадратичная, 2=кубическая
     uint8_t  numParams        = 0;       // реальная длина theta для лучшей модели (LN/QN/CN, не более 6)
     bool     calibrated       = false;   // флаг успешно завершённой калибровки
@@ -372,7 +372,10 @@ private:
 
     // Формирует векторы признаков для трёх моделей из нормализованного t и текущих EMA.
     // Вход: t — нормализованный val2; xL[LN]/xQ[QN]/xC[CN] — выходные буферы признаков.
-    // Структура: [t^deg, ..., t, ema_0, ..., ema_k, 1.0] (bias всегда последний).
+    // Структура: [t^deg, ..., t, (ema_0-t), ..., (ema_k-t), 1.0] (bias всегда последний).
+    // EMA используется как дифференциальный признак (ema - t), а не абсолютный:
+    // при стабильной T → (ema-t)=0, нет зависимости от истории запуска;
+    // при изменении T → (ema-t) ≈ скорость × τ, кодирует реальное тепловое запаздывание.
     void _buildFeatures(float t, float* xL, float* xQ, float* xC) const {
         xL[0] = t;
         xQ[0] = t*t;     xQ[1] = t;
@@ -380,9 +383,9 @@ private:
 
         if constexpr (EnableDynamic && NumEma > 0) {
             for (uint8_t i = 0; i < NumEma; i++) {
-                xL[1 + i] = _emaState[i];
-                xQ[2 + i] = _emaState[i];
-                xC[3 + i] = _emaState[i];
+                xL[1 + i] = _emaState[i] - t;
+                xQ[2 + i] = _emaState[i] - t;
+                xC[3 + i] = _emaState[i] - t;
             }
             xL[1 + NumEma] = 1.0f;
             xQ[2 + NumEma] = 1.0f;
@@ -557,7 +560,7 @@ private:
     // Выход: true — данные корректны и загружены; false — данные не прошли валидацию.
     // При успехе устанавливает _isLoaded=true; нормировка восстанавливается по min/max_val2.
     bool _loadData() {
-        if (_calibData.version != 2)    return false;
+        if (_calibData.version != 3)    return false;
         if (!_calibData.calibrated) return false;
         if (_calibData.numParams < 2 || _calibData.numParams > 6)  return false;
         // numParams должен совпадать с реальной длиной theta для сохранённого типа модели
@@ -1232,7 +1235,7 @@ public:
     // Вход: d — структура ModelEEData; проходит те же валидационные проверки что и _loadData().
     // Выход: true — данные корректны и загружены; false — данные не прошли валидацию.
     bool loadFromData(const ModelEEData& d) {
-        if (d.version != 2)                        return false;
+        if (d.version != 3)                        return false;
         if (!d.calibrated)                         return false;
         if (d.numParams < 2 || d.numParams > 6)   return false;
         uint8_t expectedParams;

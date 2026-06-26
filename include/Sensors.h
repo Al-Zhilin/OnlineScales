@@ -17,8 +17,10 @@ class ScalesManager {
     uint32_t _tare_timer = 0;                             // для таймера от частого тарирования (напр., если пользователь удерживает кнопку дольше, чем нужно)
     uint32_t _start_timer = millis();                     // засекаем millis() после пробуждения HX711 - чтения будем вызыват не ранее, чем после 500мс после запуска (длительность инициализации и первого чтения)
     float    _filtered        = 0.0f;
-    int32_t  _warmupSum       = 0;
-    uint8_t  _warmupRemaining = 5;                        // 5 чтений (~500 мс при 10 SPS) для усреднения начального значения фильтра
+    bool     _inWarmup        = true;  // true до первого стабильного окна; сбрасывается при каждом пробуждении
+    int32_t  _stableRef       = 0;    // первое чтение текущего окна стабильности
+    int32_t  _stableAcc       = 0;    // накопитель для усреднения стабильного окна
+    uint8_t  _stableCount     = 0;    // сколько подряд идущих чтений попало в окно
     FileData EEOffset{&LittleFS, "/offset.dat", 'Z', &_offset, sizeof(_offset)};       // объект для управления переменной оффсета в файловой системе
 
   public:
@@ -77,6 +79,12 @@ class ScalesManager {
       _scales->sleepMode(mode);
       if (!mode) {
         _start_timer = millis();                          // засекаем время после пробуждения
+        if (WARMUP_AFTER_SLEEP) {
+            _inWarmup    = true;                              // каждое пробуждение — новый прогрев
+            _stableRef   = 0;
+            _stableAcc   = 0;
+            _stableCount = 0;
+        }
       }
     }
 
@@ -97,12 +105,22 @@ class ScalesManager {
       int32_t new_weight = _scales->read();
       if (INVERT_WEIGHT_SIGN)   new_weight *= -1;
 
-      // Первые несколько значений с тензодатчиков могут быть нестабильны/ложны, берем из них среднее
-      // Возвращаем BUSY пока фаза не завершена — sensorData не обновляется.
-      static uint8_t _warmup_reading = _warmupRemaining;
-      if (_warmup_reading > 0) {
-        if (_warmup_reading <= ((_warmupRemaining + 1) * 0.5f)) _warmupSum += new_weight;
-        if (--_warmup_reading == 0)    _filtered = float(_warmupSum) / ((_warmupRemaining + 1) / 2);
+      // Прогрев по окну стабильности: принимаем первое чтение только после того,
+      // как WARMUP_STABLE_N подряд идущих показаний HX711 уложились в 1.5*STANDART_NOISE друг от друга.
+      // Гарантирует стабильный старт и после включения питания, и после каждого пробуждения из сна (включается опционально).
+      static constexpr uint8_t WARMUP_STABLE_N = 5;
+      if (_inWarmup) {
+        if (_stableCount == 0 || abs(new_weight - _stableRef) > 1.5*STANDART_NOISE) {
+          _stableRef   = new_weight;      // начинаем новое окно от текущего чтения
+          _stableAcc   = new_weight;
+          _stableCount = 1;
+        } else {
+          _stableAcc += new_weight;
+          if (++_stableCount >= WARMUP_STABLE_N) {
+            _filtered = float(_stableAcc) / _stableCount;   // _filtered = среднее стабильного окна
+            _inWarmup = false;
+          }
+        }
         return ScalesState::BUSY;
       }
 
