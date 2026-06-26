@@ -95,7 +95,7 @@ class ScalesManager {
     ScalesState tick() {                                  // обновляем фильтр
       if (!this->isReady())  {
         if (millis() - _start_timer > 2000) {             // Добавляем защиту от аппаратного зависания HX711
-            return ScalesState::ERROR;                    // Датчик не ответил за 2 секунды! - признак зависания, а не просто "ожидания готовности измерения"
+            return ScalesState::ERROR;                    // Датчик не ответил за 2 секунды - признак зависания, а не просто "ожидания готовности измерения"
         }
         return ScalesState::BUSY;
       }
