@@ -334,7 +334,7 @@ void loop() {
                 // Одно объединённое сообщение: заголовок калибровки + полный отчёт (вместо двух сообщений подряд)
                 String msg = resumed
                     ? String("Калибровка продолжена после перезагрузки (RTC)%0A%0A")
-                    : (String("Переключатель переведен в режим калибровки%0AЭталонный вес: ") + sensorData.weightGr + "%0A%0A");
+                    : (String("Переключатель переведен в режим калибровки!%0AЭталонный вес: ") + sensorData.weightGr + " гр.%0A%0A");
                 msg += buildReportMessage(t_state);
 
                 modemPayload = "peer_ids=";

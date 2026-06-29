@@ -437,27 +437,26 @@ private:
     static void _reprojectPoly(float* th, uint8_t degree, uint8_t total,
                                 float alpha, float beta) {
         uint8_t bi = uint8_t(total - 1);
-        // Масштабирование EMA-коэффициентов на alpha; накопление их beta-сдвига в смещение
-        float emaBeta = 0.0f;
-        for (uint8_t i = degree; i < bi; i++) {
-            emaBeta += th[i] * beta;
-            th[i]   *= alpha;
-        }
+        // EMA-признаки — ДИФФЕРЕНЦИАЛЬНЫЕ: (ema-t). При аффинном преобразовании t и ema
+        // обе части сдвигаются на beta → в разности beta взаимно уничтожается.
+        // Следствие: EMA-коэффициенты масштабируются только на alpha; вклада в смещение нет.
+        for (uint8_t i = degree; i < bi; i++)
+            th[i] *= alpha;
         if (degree == 1) {
             float a = th[0], b = th[bi];
             th[0]  = a * alpha;
-            th[bi] = a * beta + b + emaBeta;
+            th[bi] = a * beta + b;
         } else if (degree == 2) {
             float a = th[0], b = th[1], c = th[bi];
             th[0]  = a * alpha * alpha;
             th[1]  = 2.0f*a*alpha*beta + b*alpha;
-            th[bi] = a*beta*beta + b*beta + c + emaBeta;
+            th[bi] = a*beta*beta + b*beta + c;
         } else {
             float a = th[0], b = th[1], c = th[2], d = th[bi];
             th[0]  = a*alpha*alpha*alpha;
             th[1]  = 3.0f*a*alpha*alpha*beta + b*alpha*alpha;
             th[2]  = 3.0f*a*alpha*beta*beta  + 2.0f*b*alpha*beta + c*alpha;
-            th[bi] = a*beta*beta*beta + b*beta*beta + c*beta + d + emaBeta;
+            th[bi] = a*beta*beta*beta + b*beta*beta + c*beta + d;
         }
     }
 
@@ -928,6 +927,17 @@ public:
             for (int i = 0; i < CN; i++) bufC[i] = sC[i];
             _reprojectPoly(bufC, 3, CN, alpha_fin, beta_fin);
             cubicModel.setTheta(bufC);
+
+            // Репроекция EMA-состояния в финальную нормировку — та же формула, что в _tryReproject().
+            // Без этого шага _emaState остаётся в старых координатах (_normZero/_normScale до смены),
+            // тогда как t в compensate() вычисляется уже в новых → дифференциал (ema-t) неверен →
+            // компенсация ошибочна в сессии сразу после finishCalibration (до следующей перезагрузки).
+            if constexpr (EnableDynamic && NumEma > 0) {
+                if (_emaInitialized) {
+                    for (uint8_t i = 0; i < NumEma; i++)
+                        _emaState[i] = (_emaState[i] * _normScale + _normZero - fin_zero) / fin_scale;
+                }
+            }
         }
 
         _normZero  = fin_zero;
