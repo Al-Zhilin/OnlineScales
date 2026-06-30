@@ -40,6 +40,7 @@ RTC_DATA_ATTR uint8_t rtc_main_fsm_state = 0;              // И для глав
 RTC_DATA_ATTR uint8_t rtc_reboot_cause = 0;                // Причина последнего ESP.restart() (см. enum RebootCause); печатается в теге как RC:N
 RTC_DATA_ATTR uint8_t rtc_problem_mask = 0;                // Накопитель проблем для отчёта: переживает цикл, чтобы ошибки/подавленные ребуты гарантированно попали в тег ВК (биты 0-5 как rtc_error_mask, 6=ребут подавлен в калибровке, 7=сбой LittleFS)
 RTC_DATA_ATTR CalibLiveState rtc_calib_snapshot;           // Снимок незавершённой калибровки: позволяет продолжить сессию после программной перезагрузки/сна (теряется только при полном обесточивании)
+RTC_DATA_ATTR float rtc_prev_uncertainty = 101.0f;          // Неуверенность модели на момент последнего ВК-сообщения: для отображения изменения за период (>100 = нет предыдущего значения)
 
 
 AsyncLed<LED_PIN> led(LED_SWITCH_PIN);
@@ -84,8 +85,19 @@ String buildReportMessage(TempState t_state) {
         int   diff_g  = int((comp_kg - ref_kg) * 1000.0f + 0.5f);
         msg += "Вес с компенсацией: " + String(comp_kg, 2) + " / " + String(ref_kg, 2) + " кг";
         msg += " (" + String(diff_g >= 0 ? "+" : "") + String(diff_g) + " г)%0A";
-        msg += "Неуверенность модели: " + String(compensator.getUncertainty(), 1) + "%25%0A";
         msg += "Точек: " + String(compensator.getNumSamples()) + ", диапазон: " + String(compensator.getCalibrationDelta(), 1) + " C%0A";
+
+        // Неуверенность: 100% = нет данных, 0% = идеальная модель.
+        // Тренд: снижение за период (>0 = улучшение). rtc_prev_uncertainty>100 → нет предыдущего значения.
+        float unc   = compensator.getUncertainty();
+        float drop  = (rtc_prev_uncertainty <= 100.0f) ? (rtc_prev_uncertainty - unc) : 0.0f;
+        rtc_prev_uncertainty = unc;
+
+        msg += "Неуверенность: " + String(unc, 1) + "%25";
+        //msg += " (−" + String(drop, 1) + "%25 за период)";
+        msg += (drop < 0) ? (" (+" + String(drop, 1)) : (" (-" + String(drop, 1));
+        msg += "%25 за период)";
+        msg += "%0A";
     }
 
     msg += "Напряжение батареи: " + String(batteryVoltage) + "В";
@@ -325,6 +337,7 @@ void loop() {
                 } else {
                     compensator.begin(sensorData.weightGr);                  // фиксируем референс = текущий вес; при повторном вызове обновляет referenceVal1
                     compensator.startCalibration();
+                    rtc_prev_uncertainty = 101.0f;          // сбрасываем трекинг тренда для новой сессии
                     compensator.saveLiveState(rtc_calib_snapshot);           // сразу фиксируем свежую пустую сессию, чтобы ребут в первые секунды не воскресил старую
                     LOG("Calibration started");
                 }
@@ -358,12 +371,35 @@ void loop() {
                 external_request.force_send = false;        // не допускаем случайную отправку данных сразу после завершения калибровки
                 LOG("Калибровка завершена!");
 
-                String msg = "Калибровка завершена:%0A";
+                String msg = "Калибровка завершена!%0A";
                 if (calib_saved) {
+                    ModelEEData cd = compensator.getSavedData();
+                    const char* mdl[] = {"Linear", "Quadratic", "Cubic"};
+
+                    msg += "Модель: ";
+                    msg += (cd.modelType < 3) ? mdl[cd.modelType] : String(cd.modelType);
+                    msg += "%0A";
+
+                    msg += "Params[" + String(cd.numParams) + "]:";
+                    for (uint8_t i = 0; i < cd.numParams; i++)
+                        msg += " " + String(cd.params[i], 2);
+                    msg += "%0A";
+
+                    float nz = (cd.minCalibVal2 + cd.maxCalibVal2) * 0.5f;
+                    float ns = (cd.maxCalibVal2 - cd.minCalibVal2) * 0.5f;
+                    msg += "Норм.: zero=" + String(nz, 3) + " scale=" + String(ns, 3) + "%0A";
+
+                    msg += "T: [" + String(cd.minCalibVal2, 2) + ", " + String(cd.maxCalibVal2, 2) + "] C%0A";
+
+                    msg += "Точек: " + String(compensator.getNumSamples());
+                    msg += ", охват: " + String(compensator.getCalibrationDelta(), 1) + " C%0A";
+
                     msg += compensator.getPolynomialString(true);
                     msg += "%0AДанные сохранены в память";
                 } else {
-                    msg += "Недостаточно данных, модель не сохранена";
+                    msg += "Недостаточно данных, модель не сохранена%0A";
+                    msg += "Точек: " + String(compensator.getNumSamples());
+                    msg += ", охват: " + String(compensator.getCalibrationDelta(), 1) + " C";
                 }
 
                 modemPayload = "peer_ids=";
