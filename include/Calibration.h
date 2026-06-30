@@ -317,6 +317,7 @@ private:
     float    _slopeGain     = 25.0f;  // крутизна снижения λ: 1/_slopeGain — ширина переходной зоны
     float    _pfloor        = 0.0f;   // нижняя граница диагонали P для всех моделей
     uint8_t  _cmaWarmup     = 3;      // первые N шагов обучают модели, но не участвуют в CMA-оценке
+    uint32_t _steadyInterval = 0;    // каждые N принятых шагов — дополнительный RLS-update с EMA-diff=0 (холодный старт); 0=откл
 
     // ── Состояние после калибровки ───────────────────────────────────────────
     float _savedUncertainty = 100.0f; // неопределённость, сохранённая в finishCalibration(); возвращается при _isLoaded
@@ -721,6 +722,14 @@ public:
         cubicModel.scaleP(factor, 100000.0f);
     }
 
+    // Включает инъекцию синтетических steady-state точек во время калибровки.
+    // Каждые n принятых шагов calibrationStep() добавляет дополнительный RLS-update
+    // с теми же реальными показаниями, но EMA-дифференциалами = 0 (состояние холодного старта).
+    // Это ограничивает theta_t и bias физически верными значениями, исключая мультиколлинеарность:
+    // после рекалибровки compensate() даёт правильный результат сразу после холодного старта,
+    // без ожидания схождения EMA. 0 = отключено. Рекомендуемое значение: 10.
+    void setSteadyInterval(uint32_t n) { _steadyInterval = n; }
+
     // Настраивает автоматический буст P при calibrationStep().
     // Если остаток ведущей модели (до update) превышает threshold, P умножается на boostFactor
     // перед шагом RLS — усиление Калмана растёт и модель адаптируется быстрее.
@@ -879,6 +888,24 @@ public:
         }
 
         _lastVal2 = val2;
+
+        // Инъекция синтетической steady-state точки: каждые _steadyInterval принятых шагов
+        // добавляет RLS-update с теми же реальными показаниями, но EMA-дифференциалами = 0.
+        // Физически обоснована: реальный дрейф при T определяется физикой, а не историей EMA.
+        // Снимает мультиколлинеарность: theta_t и bias учатся предсказывать правильно при (ema-t)=0,
+        // то есть именно при холодном старте. Не влияет на samplesCount и CMA.
+        if constexpr (EnableDynamic && NumEma > 0) {
+            if (_steadyInterval > 0 && samplesCount % _steadyInterval == 0) {
+                float saved[_EABUF];
+                for (uint8_t i = 0; i < NumEma; i++) { saved[i] = _emaState[i]; _emaState[i] = t; }
+                float xL_ss[LN], xQ_ss[QN], xC_ss[CN];
+                _buildFeatures(t, xL_ss, xQ_ss, xC_ss);
+                for (uint8_t i = 0; i < NumEma; i++) _emaState[i] = saved[i];
+                linearModel.update(xL_ss, error);
+                quadraticModel.update(xQ_ss, error);
+                cubicModel.update(xC_ss, error);
+            }
+        }
     }
 
     // Завершает калибровку: выбирает лучшую модель, перепроецирует в финальную нормировку, сохраняет во flash/EEPROM.

@@ -217,6 +217,7 @@ void setup() {
     const float ema_alphas[2] = {0.97f, 0.997f};
     compensator.setEmaAlphas(ema_alphas, 2);
     compensator.setDriftBoost(200, 100);
+    compensator.setSteadyInterval(10);   // каждые 10 реальных шагов — синтетическая steady-state точка (исправляет холодный старт)
 
     // Поднимаем сохранённую модель из flash на КАЖDOM старте — иначе в обычном режиме (без входа
     // в калибровку) compensate() молча отдаёт сырой вес: begin() раньше звался только при старте
